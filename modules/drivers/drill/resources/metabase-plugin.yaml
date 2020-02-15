@@ -1,0 +1,26 @@
+info:
+  name: Metabase Apache Drill Driver
+  version: 1.0.0-SNAPSHOT
+  description: Allows Metabase to connect to Apache Drill.
+driver:
+  - name: hive-like
+    lazy-load: true
+    abstract: true
+    parent: sql-jdbc
+  - name: drill
+    display-name: Apache Drill
+    lazy-load: true
+    parent: hive-like
+    connection-properties:
+      - name: drill-connect
+        display-name: String to connect to drill
+        placeholder: "drillbit=localhost or zk=localhost:2181/drill/drillbits1;schema=hive"
+      - merge:
+          - additional-options
+          - display-name: Additional connection string options
+    connection-properties-include-tunnel-config: false
+init:
+  - step: load-namespace
+    namespace: metabase.driver.drill
+  - step: register-jdbc-driver
+    class: org.apache.drill.jdbc.Driver
