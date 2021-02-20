@@ -5,16 +5,17 @@
   The various QP Store functions & macros in this namespace are primarily meant to help write QP Middleware tests, so
   you can test a given piece of middleware without having to worry about putting things in the QP Store
   yourself (since this is usually done by other middleware in the first place)."
-  (:require [metabase
-             [query-processor :as qp]
-             [util :as u]]
+  (:require [clojure.test :refer :all]
+            [metabase.driver :as driver]
             [metabase.mbql.util :as mbql.u]
-            [metabase.models
-             [field :refer [Field]]
-             [table :refer [Table]]]
+            [metabase.models.field :refer [Field]]
+            [metabase.models.table :refer [Table]]
+            [metabase.query-processor :as qp]
             [metabase.query-processor.middleware.add-implicit-joins :as add-implicit-joins]
             [metabase.query-processor.store :as qp.store]
+            [metabase.query-processor.timezone :as qp.timezone]
             [metabase.test.data :as data]
+            [metabase.util :as u]
             [metabase.util.schema :as su]
             [schema.core :as s]
             [toucan.db :as db]))
@@ -97,9 +98,9 @@
                               (data/mbql-query venues {:aggregation [[:count]]}))]
       ...)"
   [query]
-  (let [results  (qp/process-query query)
+  (let [results  (qp/process-userland-query query)
         metadata (or (get-in results [:data :results_metadata :columns])
-                     (throw (ex-info "Query failure" results)))]
+                     (throw (ex-info "Missing [:data :results_metadata :columns] from query results" results)))]
     {:dataset_query   query
      :result_metadata metadata}))
 
@@ -110,5 +111,52 @@
     (fk-table-alias-name (data/id :categories) (data/id :venues :category_id)) ;; -> \"CATEGORIES__via__CATEGORY_ID\""
   [table-or-id field-or-id]
   (#'add-implicit-joins/join-alias
-   (db/select-one-field :name Table :id (u/get-id table-or-id))
-   (db/select-one-field :name Field :id (u/get-id field-or-id))))
+   (db/select-one-field :name Table :id (u/the-id table-or-id))
+   (db/select-one-field :name Field :id (u/the-id field-or-id))))
+
+
+;;; ------------------------------------------------- Timezone Stuff -------------------------------------------------
+
+(defn do-with-report-timezone-id
+  "Impl for `with-report-timezone-id`."
+  [timezone-id thunk]
+  {:pre [((some-fn nil? string?) timezone-id)]}
+  ;; This will fail if the app DB isn't initialized yet. That's fine — there's no DBs to notify if the app DB isn't
+  ;; set up.
+  (try
+    (#'driver/notify-all-databases-updated)
+    (catch Throwable _))
+  (binding [qp.timezone/*report-timezone-id-override* (or timezone-id ::nil)]
+    (testing (format "\nreport timezone id = %s" timezone-id)
+      (thunk))))
+
+(defmacro with-report-timezone-id
+  "Override the `report-timezone` Setting and execute `body`. Intended primarily for REPL and test usage."
+  [timezone-id & body]
+  `(do-with-report-timezone-id ~timezone-id (fn [] ~@body)))
+
+(defn do-with-database-timezone-id
+  "Impl for `with-database-timezone-id`."
+  [timezone-id thunk]
+  {:pre [((some-fn nil? string?) timezone-id)]}
+  (binding [qp.timezone/*database-timezone-id-override* (or timezone-id ::nil)]
+    (testing (format "\ndatabase timezone id = %s" timezone-id)
+      (thunk))))
+
+(defmacro with-database-timezone-id
+  "Override the database timezone ID and execute `body`. Intended primarily for REPL and test usage."
+  [timezone-id & body]
+  `(do-with-database-timezone-id ~timezone-id (fn [] ~@body)))
+
+(defn do-with-results-timezone-id
+  "Impl for `with-results-timezone-id`."
+  [timezone-id thunk]
+  {:pre [((some-fn nil? string?) timezone-id)]}
+  (binding [qp.timezone/*results-timezone-id-override* (or timezone-id ::nil)]
+    (testing (format "\nresults timezone id = %s" timezone-id)
+      (thunk))))
+
+(defmacro with-results-timezone-id
+  "Override the determined results timezone ID and execute `body`. Intended primarily for REPL and test usage."
+  [timezone-id & body]
+  `(do-with-results-timezone-id ~timezone-id (fn [] ~@body)))

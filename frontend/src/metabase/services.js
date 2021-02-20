@@ -1,7 +1,10 @@
 /* @flow */
+import _ from "underscore";
 
 import { GET, PUT, POST, DELETE } from "metabase/lib/api";
 import { IS_EMBED_PREVIEW } from "metabase/lib/embed";
+import Metadata from "metabase-lib/lib/metadata/Metadata";
+import Question from "metabase-lib/lib/Question";
 
 // use different endpoints for embed previews
 const embedBase = IS_EMBED_PREVIEW ? "/api/preview_embed" : "/api/embed";
@@ -9,16 +12,89 @@ const embedBase = IS_EMBED_PREVIEW ? "/api/preview_embed" : "/api/embed";
 // $FlowFixMe: Flow doesn't understand webpack loader syntax
 import getGAMetadata from "promise-loader?global!metabase/lib/ga-metadata"; // eslint-disable-line import/default
 
-import type { Data, Options } from "metabase/lib/api";
+import type { Data, Options, APIMethod } from "metabase/lib/api";
 
-import type { DatabaseId } from "metabase/meta/types/Database";
-import type { DatabaseCandidates } from "metabase/meta/types/Auto";
-import type { DashboardWithCards } from "metabase/meta/types/Dashboard";
+import type { Card } from "metabase-types/types/Card";
+import type { DatabaseId } from "metabase-types/types/Database";
+import type { DatabaseCandidates } from "metabase-types/types/Auto";
+import type { DashboardWithCards } from "metabase-types/types/Dashboard";
 
 export const ActivityApi = {
   list: GET("/api/activity"),
   recent_views: GET("/api/activity/recent_views"),
 };
+
+// only available with token loaded
+export const GTAPApi = {
+  list: GET("/api/mt/gtap"),
+  create: POST("/api/mt/gtap"),
+  update: PUT("/api/mt/gtap/:id"),
+  attributes: GET("/api/mt/user/attributes"),
+};
+
+// Pivot tables need extra data beyond what's described in the MBQL query itself.
+// To fetch that extra data we rely on specific APIs for pivot tables that mirrow the normal endpoints.
+// Those endpoints take the query along with `pivot_rows` and `pivot_cols` to return the subtotal data.
+// If we add breakout/grouping sets to MBQL in the future we can remove this API switching.
+export function maybeUsePivotEndpoint(
+  api: APIMethod,
+  card: Card,
+  metadata?: Metadata,
+): APIMethod {
+  function canonicalFieldRef(ref) {
+    // Field refs between the query and setting might differ slightly.
+    // This function trims binned dimensions to just the field-id
+    if (ref[0] === "binning-strategy") {
+      return ref.slice(0, 2);
+    }
+    return ref;
+  }
+
+  const question = new Question(card, metadata);
+
+  function wrap(api) {
+    return (params: ?Data, ...rest: any) => {
+      const setting = question.setting("pivot_table.column_split");
+      const breakout =
+        (question.isStructured() && question.query().breakouts()) || [];
+      const { rows: pivot_rows, columns: pivot_cols } = _.mapObject(
+        setting,
+        fieldRefs =>
+          fieldRefs
+            .map(field_ref =>
+              breakout.findIndex(b =>
+                _.isEqual(canonicalFieldRef(b), canonicalFieldRef(field_ref)),
+              ),
+            )
+            .filter(index => index !== -1),
+      );
+      return api({ ...params, pivot_rows, pivot_cols }, ...rest);
+    };
+  }
+  if (
+    card.display !== "pivot" ||
+    !question.isStructured() ||
+    // if we have metadata for the db, check if it supports pivots
+    (question.database() && !question.database().supportsPivots())
+  ) {
+    return api;
+  }
+
+  const mapping = [
+    [CardApi.query, CardApi.query_pivot],
+    [MetabaseApi.dataset, MetabaseApi.dataset_pivot],
+    [PublicApi.cardQuery, PublicApi.cardQueryPivot],
+    [PublicApi.dashboardCardQuery, PublicApi.dashboardCardQueryPivot],
+    [EmbedApi.cardQuery, EmbedApi.cardQueryPivot],
+    [EmbedApi.dashboardCardQuery, EmbedApi.dashboardCardQueryPivot],
+  ];
+  for (const [from, to] of mapping) {
+    if (api === from) {
+      return wrap(to);
+    }
+  }
+  return api;
+}
 
 export const CardApi = {
   list: GET("/api/card", (cards, { data }) =>
@@ -33,6 +109,7 @@ export const CardApi = {
   update: PUT("/api/card/:id"),
   delete: DELETE("/api/card/:cardId"),
   query: POST("/api/card/:cardId/query"),
+  query_pivot: POST("/api/card/pivot/:cardId/query"),
   // isfavorite:                  GET("/api/card/:cardId/favorite"),
   favorite: POST("/api/card/:cardId/favorite"),
   unfavorite: DELETE("/api/card/:cardId/favorite"),
@@ -60,6 +137,9 @@ export const DashboardApi = {
   reposition_cards: PUT("/api/dashboard/:dashId/cards"),
   favorite: POST("/api/dashboard/:dashId/favorite"),
   unfavorite: DELETE("/api/dashboard/:dashId/favorite"),
+  parameterValues: GET("/api/dashboard/:dashId/params/:paramId/values"),
+  parameterSearch: GET("/api/dashboard/:dashId/params/:paramId/search/:prefix"),
+  validFilterFields: GET("/api/dashboard/params/valid-filter-fields"),
 
   listPublic: GET("/api/dashboard/public"),
   listEmbeddable: GET("/api/dashboard/embeddable"),
@@ -78,19 +158,29 @@ export const CollectionsApi = {
   updateGraph: PUT("/api/collection/graph"),
 };
 
+const PIVOT_PUBLIC_PREFIX = "/api/public/pivot/";
+
 export const PublicApi = {
   card: GET("/api/public/card/:uuid"),
   cardQuery: GET("/api/public/card/:uuid/query"),
+  cardQueryPivot: GET(PIVOT_PUBLIC_PREFIX + "card/:uuid/query"),
   dashboard: GET("/api/public/dashboard/:uuid"),
   dashboardCardQuery: GET("/api/public/dashboard/:uuid/card/:cardId"),
+  dashboardCardQueryPivot: GET(
+    PIVOT_PUBLIC_PREFIX + "dashboard/:uuid/card/:cardId",
+  ),
 };
 
 export const EmbedApi = {
   card: GET(embedBase + "/card/:token"),
   cardQuery: GET(embedBase + "/card/:token/query"),
+  cardQueryPivot: GET(embedBase + "/pivot/card/:token/query"),
   dashboard: GET(embedBase + "/dashboard/:token"),
   dashboardCardQuery: GET(
     embedBase + "/dashboard/:token/dashcard/:dashcardId/card/:cardId",
+  ),
+  dashboardCardQueryPivot: GET(
+    embedBase + "/pivot/dashboard/:token/dashcard/:dashcardId/card/:cardId",
   ),
 };
 
@@ -123,12 +213,6 @@ export const LdapApi = {
 
 export const MetabaseApi = {
   db_list: GET("/api/database"),
-  db_list_with_tables: GET(
-    "/api/database?include_tables=true&include_cards=true",
-  ),
-  db_real_list_with_tables: GET(
-    "/api/database?include_tables=true&include_cards=false",
-  ),
   db_create: POST("/api/database"),
   db_validate: POST("/api/database/validate"),
   db_add_sample_dataset: POST("/api/database/sample_dataset"),
@@ -136,6 +220,8 @@ export const MetabaseApi = {
   db_update: PUT("/api/database/:id"),
   db_delete: DELETE("/api/database/:dbId"),
   db_metadata: GET("/api/database/:dbId/metadata"),
+  db_schemas: GET("/api/database/:dbId/schemas"),
+  db_schema_tables: GET("/api/database/:dbId/schema/:schemaName"),
   //db_tables:   GET("/api/database/:dbId/tables"),
   db_fields: GET("/api/database/:dbId/fields"),
   db_idfields: GET("/api/database/:dbId/idfields"),
@@ -210,8 +296,15 @@ export const MetabaseApi = {
   field_search: GET("/api/field/:fieldId/search/:searchFieldId"),
   field_remapping: GET("/api/field/:fieldId/remapping/:remappedFieldId"),
   dataset: POST("/api/dataset"),
+  dataset_pivot: POST("/api/dataset/pivot"),
   dataset_duration: POST("/api/dataset/duration"),
   native: POST("/api/dataset/native"),
+
+  // to support audit app  allow the endpoint to be provided in the query
+  datasetEndpoint: POST("/api/:endpoint", {
+    // this prevents the `endpoint` parameter from being URL encoded
+    raw: { endpoint: true },
+  }),
 };
 
 export const PulseApi = {
@@ -337,17 +430,17 @@ export const TaskApi = {
 export function setPublicQuestionEndpoints(uuid: string) {
   setFieldEndpoints("/api/public/card/:uuid", { uuid });
 }
-export function setPublicDashboardEndpoints(uuid: string) {
-  setFieldEndpoints("/api/public/dashboard/:uuid", { uuid });
+export function setPublicDashboardEndpoints() {
+  setParamsEndpoints("/api/public");
 }
 export function setEmbedQuestionEndpoints(token: string) {
   if (!IS_EMBED_PREVIEW) {
     setFieldEndpoints("/api/embed/card/:token", { token });
   }
 }
-export function setEmbedDashboardEndpoints(token: string) {
+export function setEmbedDashboardEndpoints() {
   if (!IS_EMBED_PREVIEW) {
-    setFieldEndpoints("/api/embed/dashboard/:token", { token });
+    setParamsEndpoints("/api/embed");
   }
 }
 
@@ -356,7 +449,7 @@ function GET_with(url: string, params: Data) {
     GET(url)({ ...params, ...data }, options);
 }
 
-export function setFieldEndpoints(prefix: string, params: Data) {
+function setFieldEndpoints(prefix: string, params: Data) {
   MetabaseApi.field_values = GET_with(
     prefix + "/field/:fieldId/values",
     params,
@@ -368,6 +461,15 @@ export function setFieldEndpoints(prefix: string, params: Data) {
   MetabaseApi.field_remapping = GET_with(
     prefix + "/field/:fieldId/remapping/:remappedFieldId",
     params,
+  );
+}
+
+function setParamsEndpoints(prefix: string) {
+  DashboardApi.parameterValues = GET(
+    prefix + "/dashboard/:dashId/params/:paramId/values",
+  );
+  DashboardApi.parameterSearch = GET(
+    prefix + "/dashboard/:dashId/params/:paramId/search/:prefix",
   );
 }
 

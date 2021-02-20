@@ -2,10 +2,9 @@
   "Code for creating / destroying a SQLServer database from a `DatabaseDefinition`."
   (:require [clojure.java.jdbc :as jdbc]
             [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
-            [metabase.test.data
-             [interface :as tx]
-             [sql :as sql.tx]
-             [sql-jdbc :as sql-jdbc.tx]]))
+            [metabase.test.data.interface :as tx]
+            [metabase.test.data.sql :as sql.tx]
+            [metabase.test.data.sql-jdbc :as sql-jdbc.tx]))
 
 (sql-jdbc.tx/add-test-extensions! :sqlserver)
 
@@ -19,17 +18,17 @@
                                    :type/Integer        "INTEGER"
                                    ;; TEXT is considered deprecated -- see
                                    ;; https://msdn.microsoft.com/en-us/library/ms187993.aspx
-                                   :type/Text           "VARCHAR(254)"
+                                   :type/Text           "VARCHAR(1024)"
                                    :type/Time           "TIME"}]
   (defmethod sql.tx/field-base-type->sql-type [:sqlserver base-type] [_ _] database-type))
 
 
 (defmethod tx/dbdef->connection-details :sqlserver
   [_ context {:keys [database-name]}]
-  {:host     (tx/db-test-env-var-or-throw :sqlserver :host)
+  {:host     (tx/db-test-env-var-or-throw :sqlserver :host "localhost")
    :port     (Integer/parseInt (tx/db-test-env-var-or-throw :sqlserver :port "1433"))
-   :user     (tx/db-test-env-var-or-throw :sqlserver :user)
-   :password (tx/db-test-env-var-or-throw :sqlserver :password)
+   :user     (tx/db-test-env-var-or-throw :sqlserver :user "SA")
+   :password (tx/db-test-env-var-or-throw :sqlserver :password "P@ssw0rd")
    :db       (when (= context :db)
                database-name)})
 
@@ -61,3 +60,16 @@
   ([_ db-name table-name field-name] [db-name "dbo" table-name field-name]))
 
 (defmethod sql.tx/pk-sql-type :sqlserver [_] "INT IDENTITY(1,1)")
+
+(defmethod tx/aggregate-column-info :sqlserver
+  ([driver ag-type]
+   (merge
+    ((get-method tx/aggregate-column-info ::tx/test-extensions) driver ag-type)
+    (when (#{:count :cum-count} ag-type)
+      {:base_type :type/Integer})))
+
+  ([driver ag-type field]
+   (merge
+    ((get-method tx/aggregate-column-info ::tx/test-extensions) driver ag-type field)
+    (when (#{:count :cum-count} ag-type)
+      {:base_type :type/Integer}))))

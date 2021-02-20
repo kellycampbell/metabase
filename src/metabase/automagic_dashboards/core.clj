@@ -3,48 +3,38 @@
    heuristics."
   (:require [buddy.core.codecs :as codecs]
             [cheshire.core :as json]
-            [clj-time
-             [core :as t]
-             [format :as t.format]]
-            [clojure
-             [string :as str]
-             [walk :as walk]]
             [clojure.math.combinatorics :as combo]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]
-            [kixi.stats
-             [core :as stats]
-             [math :as math]]
+            [clojure.walk :as walk]
+            [java-time :as t]
+            [kixi.stats.core :as stats]
+            [kixi.stats.math :as math]
             [medley.core :as m]
-            [metabase
-             [driver :as driver]
-             [related :as related]
-             [util :as u]]
-            [metabase.automagic-dashboards
-             [filters :as filters]
-             [populate :as populate]
-             [rules :as rules]
-             [visualization-macros :as visualization]]
-            [metabase.mbql
-             [normalize :as normalize]
-             [util :as mbql.u]]
-            [metabase.models
-             [card :as card :refer [Card]]
-             [database :refer [Database]]
-             [field :as field :refer [Field]]
-             [interface :as mi]
-             [metric :as metric :refer [Metric]]
-             [query :refer [Query]]
-             [segment :refer [Segment]]
-             [table :refer [Table]]]
+            [metabase.automagic-dashboards.filters :as filters]
+            [metabase.automagic-dashboards.populate :as populate]
+            [metabase.automagic-dashboards.rules :as rules]
+            [metabase.automagic-dashboards.visualization-macros :as visualization]
+            [metabase.driver :as driver]
+            [metabase.mbql.normalize :as normalize]
+            [metabase.mbql.util :as mbql.u]
+            [metabase.models.card :as card :refer [Card]]
+            [metabase.models.database :refer [Database]]
+            [metabase.models.field :as field :refer [Field]]
+            [metabase.models.interface :as mi]
+            [metabase.models.metric :as metric :refer [Metric]]
+            [metabase.models.query :refer [Query]]
+            [metabase.models.segment :refer [Segment]]
+            [metabase.models.table :refer [Table]]
             [metabase.query-processor.util :as qp.util]
+            [metabase.related :as related]
             [metabase.sync.analyze.classify :as classify]
-            [metabase.util
-             [date :as date]
-             [i18n :as ui18n :refer [deferred-tru trs tru]]]
+            [metabase.util :as u]
+            [metabase.util.date-2 :as u.date]
+            [metabase.util.i18n :as ui18n :refer [deferred-tru trs tru]]
             [ring.util.codec :as codec]
             [schema.core :as s]
-            [toucan.db :as db])
-  (:import java.util.TimeZone))
+            [toucan.db :as db]))
 
 (def ^:private public-endpoint "/auto/dashboard/")
 
@@ -65,7 +55,7 @@
                             (m/find-first (comp #{id-or-name} :name)))]
         (-> field
             (update :base_type keyword)
-            (update :special_type keyword)
+            (update :semantic_type keyword)
             field/map->FieldInstance
             (classify/run-classifiers {}))))))
 
@@ -282,19 +272,21 @@
 
 (defn- optimal-datetime-resolution
   [field]
-  (if-let [[earliest latest] (some->> field
-                                      :fingerprint
-                                      :type
-                                      :type/DateTime
-                                      ((juxt :earliest :latest))
-                                      (map date/str->date-time))]
-    (condp > (t/in-hours (t/interval earliest latest))
-      3               :minute
-      (* 24 7)        :hour
-      (* 24 30 6)     :day
-      (* 24 30 12 10) :month
-      :year)
-    :day))
+  (let [[earliest latest] (some->> field
+                                   :fingerprint
+                                   :type
+                                   :type/DateTime
+                                   ((juxt :earliest :latest))
+                                   (map u.date/parse))]
+    (if (and earliest latest)
+      ;; e.g. if 3 hours > [duration between earliest and latest] then use `:minute` resolution
+      (condp u.date/greater-than-period-duration? (u.date/period-duration earliest latest)
+        (t/hours 3)  :minute
+        (t/days 7)   :hour
+        (t/months 6) :day
+        (t/years 10) :month
+        :year)
+      :day)))
 
 (defmethod ->reference [:mbql (type Field)]
   [_ {:keys [fk_target_field_id id link aggregation name base_type] :as field}]
@@ -353,15 +345,15 @@
       form))
 
 (defn- field-isa?
-  [{:keys [base_type special_type]} t]
-  (or (isa? (keyword special_type) t)
+  [{:keys [base_type semantic_type]} t]
+  (or (isa? (keyword semantic_type) t)
       (isa? (keyword base_type) t)))
 
 (defn- key-col?
   "Workaround for our leaky type system which conflates types with properties."
-  [{:keys [base_type special_type name]}]
+  [{:keys [base_type semantic_type name]}]
   (and (isa? base_type :type/Number)
-       (or (#{:type/PK :type/FK} special_type)
+       (or (#{:type/PK :type/FK} semantic_type)
            (let [name (str/lower-case name)]
              (or (= name "id")
                  (str/starts-with? name "id_")
@@ -372,11 +364,11 @@
                       (if (and (string? fieldspec)
                                (rules/ga-dimension? fieldspec))
                         (comp #{fieldspec} :name)
-                        (fn [{:keys [special_type target] :as field}]
+                        (fn [{:keys [semantic_type target] :as field}]
                           (cond
                             ;; This case is mostly relevant for native queries
                             (#{:type/PK :type/FK} fieldspec)
-                            (isa? special_type fieldspec)
+                            (isa? semantic_type fieldspec)
 
                             target
                             (recur target)
@@ -563,10 +555,10 @@
   (let [dimension->name (comp vector :name dimensions)
         metric->name    (comp vector first :metric metrics)]
     [k (-> v
-           (u/update-when :map.latitude_column dimension->name)
-           (u/update-when :map.longitude_column dimension->name)
-           (u/update-when :graph.metrics metric->name)
-           (u/update-when :graph.dimensions dimension->name))]))
+           (m/update-existing :map.latitude_column dimension->name)
+           (m/update-existing :map.longitude_column dimension->name)
+           (m/update-existing :graph.metrics metric->name)
+           (m/update-existing :graph.dimensions dimension->name))]))
 
 (defn capitalize-first
   "Capitalize only the first letter in a given string."
@@ -586,7 +578,7 @@
                s))
            form))
        x)
-      (u/update-when :visualization #(instantate-visualization % bindings (:metrics context)))))
+      (m/update-existing :visualization #(instantate-visualization % bindings (:metrics context)))))
 
 (defn- valid-breakout-dimension?
   [{:keys [base_type engine fingerprint aggregation]}]
@@ -753,7 +745,7 @@
                              (map (fn [field]
                                     (-> field
                                         (update :base_type keyword)
-                                        (update :special_type keyword)
+                                        (update :semantic_type keyword)
                                         field/map->FieldInstance
                                         (classify/run-classifiers {})
                                         (assoc :engine engine))))
@@ -852,6 +844,7 @@
          :dimensions
          vals
          (mapcat :matches)
+         (filter mi/can-read?)
          filters/interesting-fields
          (map ->related-entity)
          (hash-map :drilldown-fields))))
@@ -997,13 +990,13 @@
                                            ;; (no chunking).
                                            first))]
     (let [show (or show max-cards)]
-      (log/infof (trs "Applying heuristic {0} to {1}." (:rule rule) full-name))
-      (log/infof (trs "Dimensions bindings:\n{0}"
+      (log/debug (trs "Applying heuristic {0} to {1}." (:rule rule) full-name))
+      (log/debug (trs "Dimensions bindings:\n{0}"
                       (->> context
                            :dimensions
                            (m/map-vals #(update % :matches (partial map :name)))
                            u/pprint-to-str)))
-      (log/infof (trs "Using definitions:\nMetrics:\n{0}\nFilters:\n{1}"
+      (log/debug (trs "Using definitions:\nMetrics:\n{0}\nFilters:\n{1}"
                       (->> context :metrics (m/map-vals :metric) u/pprint-to-str)
                       (-> context :filters u/pprint-to-str)))
       (-> dashboard
@@ -1070,41 +1063,37 @@
 
 (defn- pluralize
   [x]
-  (case (mod x 10)
+  ;; the `int` cast here is to fix performance warnings if `*warn-on-reflection*` is enabled
+  (case (int (mod x 10))
     1 (tru "{0}st" x)
     2 (tru "{0}nd" x)
     3 (tru "{0}rd" x)
     (tru "{0}th" x)))
 
 (defn- humanize-datetime
-  [dt unit]
-  (let [dt                     (date/str->date-time dt)
-        tz                     (.getID ^TimeZone @date/jvm-timezone)
-        unparse-with-formatter (fn [formatter dt]
-                                 (t.format/unparse
-                                  (t.format/formatter formatter (t/time-zone-for-id tz))
-                                  dt))]
+  [t-str unit]
+  (let [dt (u.date/parse t-str)]
     (case unit
-      :second          (tru "at {0}" (unparse-with-formatter "h:mm:ss a, MMMM d, YYYY" dt))
-      :minute          (tru "at {0}" (unparse-with-formatter "h:mm a, MMMM d, YYYY" dt))
-      :hour            (tru "at {0}" (unparse-with-formatter "h a, MMMM d, YYYY" dt))
-      :day             (tru "on {0}" (unparse-with-formatter "MMMM d, YYYY" dt))
+      :second          (tru "at {0}" (t/format "h:mm:ss a, MMMM d, YYYY" dt))
+      :minute          (tru "at {0}" (t/format "h:mm a, MMMM d, YYYY" dt))
+      :hour            (tru "at {0}" (t/format "h a, MMMM d, YYYY" dt))
+      :day             (tru "on {0}" (t/format "MMMM d, YYYY" dt))
       :week            (tru "in {0} week - {1}"
-                            (pluralize (date/date-extract :week-of-year dt tz))
-                            (str (date/date-extract :year dt tz)))
-      :month           (tru "in {0}" (unparse-with-formatter "MMMM YYYY" dt))
+                            (pluralize (u.date/extract dt :week-of-year))
+                            (str (u.date/extract dt :year)))
+      :month           (tru "in {0}" (t/format "MMMM YYYY" dt))
       :quarter         (tru "in Q{0} - {1}"
-                            (date/date-extract :quarter-of-year dt tz)
-                            (str (date/date-extract :year dt tz)))
-      :year            (unparse-with-formatter "YYYY" dt)
-      :day-of-week     (unparse-with-formatter "EEEE" dt)
-      :hour-of-day     (tru "at {0}" (unparse-with-formatter "h a" dt))
-      :month-of-year   (unparse-with-formatter "MMMM" dt)
-      :quarter-of-year (tru "Q{0}" (date/date-extract :quarter-of-year dt tz))
+                            (u.date/extract dt :quarter-of-year)
+                            (str (u.date/extract dt :year)))
+      :year            (t/format "YYYY" dt)
+      :day-of-week     (t/format "EEEE" dt)
+      :hour-of-day     (tru "at {0}" (t/format "h a" dt))
+      :month-of-year   (t/format "MMMM" dt)
+      :quarter-of-year (tru "Q{0}" (u.date/extract dt :quarter-of-year))
       (:minute-of-hour
        :day-of-month
        :day-of-year
-       :week-of-year)  (date/date-extract unit dt tz))))
+       :week-of-year)  (u.date/extract dt unit))))
 
 (defn- field-reference->field
   [root field-reference]
@@ -1136,7 +1125,7 @@
    (->> field-reference (field-reference->field root) field-name))
   ([{:keys [display_name unit] :as field}]
    (cond->> display_name
-     (some-> unit date/date-extract-units) (tru "{0} of {1}" (unit-name unit)))))
+     (some-> unit u.date/extract-units) (tru "{0} of {1}" (unit-name unit)))))
 
 (defmethod humanize-filter-value :=
   [root [_ field-reference value]]
@@ -1238,26 +1227,27 @@
                                         :from     [Field]
                                         :where    [:and [:in :table_id candidates]
                                                    [:= :active true]
-                                                   [:or [:not= :special_type "type/PK"]
-                                                    [:= :special_type nil]]]
+                                                   [:or [:not= :semantic_type "type/PK"]
+                                                    [:= :semantic_type nil]]]
                                         :group-by [:table_id]
                                         :having   [:= :%count.* 1]}))
                            (into #{} (map :table_id)))
           ;; Table comprised entierly of join keys
-          link-table? (->> (db/query {:select   [:table_id [:%count.* "count"]]
-                                      :from     [Field]
-                                      :where    [:and [:in :table_id (keys field-count)]
-                                                 [:= :active true]
-                                                 [:in :special_type ["type/PK" "type/FK"]]]
-                                      :group-by [:table_id]})
-                           (filter (fn [{:keys [table_id count]}]
-                                     (= count (field-count table_id))))
-                           (into #{} (map :table_id)))]
+          link-table? (when (seq field-count)
+                        (->> (db/query {:select   [:table_id [:%count.* "count"]]
+                                        :from     [Field]
+                                        :where    [:and [:in :table_id (keys field-count)]
+                                                   [:= :active true]
+                                                   [:in :semantic_type ["type/PK" "type/FK"]]]
+                                        :group-by [:table_id]})
+                             (filter (fn [{:keys [table_id count]}]
+                                       (= count (field-count table_id))))
+                             (into #{} (map :table_id))))]
       (for [table tables]
         (let [table-id (u/get-id table)]
           (assoc table :stats {:num-fields  (field-count table-id 0)
-                               :list-like?  (boolean (list-like? table-id))
-                               :link-table? (boolean (link-table? table-id))}))))))
+                               :list-like?  (boolean (contains? list-like? table-id))
+                               :link-table? (boolean (contains? link-table? table-id))}))))))
 
 (def ^:private ^:const ^Long max-candidate-tables
   "Maximal number of tables per schema shown in `candidate-tables`."

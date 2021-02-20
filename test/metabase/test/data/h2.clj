@@ -5,15 +5,13 @@
             [metabase.db.spec :as dbspec]
             [metabase.driver.sql.util :as sql.u]
             [metabase.models.database :refer [Database]]
-            [metabase.test.data
-             [impl :as data.impl]
-             [interface :as tx]
-             [sql :as sql.tx]
-             [sql-jdbc :as sql-jdbc.tx]]
-            [metabase.test.data.sql-jdbc
-             [execute :as execute]
-             [load-data :as load-data]
-             [spec :as spec]]
+            [metabase.test.data.impl :as data.impl]
+            [metabase.test.data.interface :as tx]
+            [metabase.test.data.sql :as sql.tx]
+            [metabase.test.data.sql-jdbc :as sql-jdbc.tx]
+            [metabase.test.data.sql-jdbc.execute :as execute]
+            [metabase.test.data.sql-jdbc.load-data :as load-data]
+            [metabase.test.data.sql-jdbc.spec :as spec]
             [toucan.db :as db]))
 
 (sql-jdbc.tx/add-test-extensions! :h2)
@@ -48,9 +46,10 @@
 
 (defmethod tx/dbdef->connection-details :h2
   [_ context dbdef]
-  {:db (str "mem:" (tx/escaped-name dbdef) (when (= context :db)
-                                             ;; Return details with the GUEST user added so SQL queries are allowed.
-                                             ";USER=GUEST;PASSWORD=guest"))})
+  {:db (str "mem:" (tx/escaped-database-name dbdef) (when (= context :db)
+                                                      ;; Return details with the GUEST user added so SQL queries are
+                                                      ;; allowed.
+                                                      ";USER=GUEST;PASSWORD=guest"))})
 
 (defmethod sql.tx/pk-sql-type :h2 [_] "BIGINT AUTO_INCREMENT")
 
@@ -58,7 +57,8 @@
 
 (defmethod sql.tx/drop-db-if-exists-sql :h2 [& _] nil)
 
-(defmethod sql.tx/create-db-sql :h2 [& _]
+(defmethod sql.tx/create-db-sql :h2
+  [& _]
   (str
    ;; We don't need to actually do anything to create a database here. Just disable the undo
    ;; log (i.e., transactions) for this DB session because the bulk operations to load data don't need to be atomic
@@ -86,6 +86,16 @@
   (str/upper-case s))
 
 (defmethod tx/id-field-type :h2 [_] :type/BigInteger)
+
+(defmethod tx/aggregate-column-info :h2
+  ([driver ag-type]
+   ((get-method tx/aggregate-column-info ::tx/test-extensions) driver ag-type))
+
+  ([driver ag-type field]
+   (merge
+    ((get-method tx/aggregate-column-info ::tx/test-extensions) driver ag-type field)
+    (when (= ag-type :sum)
+      {:base_type :type/BigInteger}))))
 
 (defmethod execute/execute-sql! :h2
   [driver _ dbdef sql]

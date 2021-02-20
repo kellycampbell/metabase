@@ -1,11 +1,9 @@
 (ns metabase.test.data.redshift
   (:require [clojure.java.jdbc :as jdbc]
-            [metabase.driver.sql-jdbc
-             [connection :as sql-jdbc.conn]
-             [sync :as sql-jdbc.sync]]
-            [metabase.test.data
-             [interface :as tx]
-             [sql :as sql.tx]]
+            [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
+            [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
+            [metabase.test.data.interface :as tx]
+            [metabase.test.data.sql :as sql.tx]
             [metabase.test.data.sql.ddl :as ddl]
             [metabase.util :as u]))
 
@@ -46,7 +44,7 @@
 (defonce ^:private session-schema-number
   (rand-int 240)) ; there's a maximum of 256 schemas per DB so make sure we don't go over that limit
 
-(defonce ^:private session-schema-name
+(defonce session-schema-name
   (str "schema_" session-schema-number))
 
 ;; When we test against Redshift we use a session-unique schema so we can run simultaneous tests
@@ -92,7 +90,3 @@
 (defmethod tx/before-run :redshift
   [_]
   (execute! "DROP SCHEMA IF EXISTS %s CASCADE; CREATE SCHEMA %s;" session-schema-name session-schema-name))
-
-(defmethod tx/after-run :redshift
-  [_]
-  (execute! "DROP SCHEMA IF EXISTS %s CASCADE;" session-schema-name))

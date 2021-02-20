@@ -1,15 +1,15 @@
 (ns metabase.query-processor.middleware.parameters
   "Middleware for substituting parameters in queries."
   (:require [clojure.data :as data]
+            [clojure.set :as set]
             [clojure.tools.logging :as log]
-            [metabase.mbql
-             [normalize :as normalize]
-             [schema :as mbql.s]
-             [util :as mbql.u]]
+            [medley.core :as m]
+            [metabase.mbql.normalize :as normalize]
+            [metabase.mbql.schema :as mbql.s]
+            [metabase.mbql.util :as mbql.u]
             [metabase.query-processor.interface :as i]
-            [metabase.query-processor.middleware.parameters
-             [mbql :as params.mbql]
-             [native :as params.native]]
+            [metabase.query-processor.middleware.parameters.mbql :as params.mbql]
+            [metabase.query-processor.middleware.parameters.native :as params.native]
             [metabase.util :as u]
             [schema.core :as s]))
 
@@ -38,19 +38,16 @@
     (cond-> expanded
       (join? m) move-join-condition-to-source-query)))
 
-(defn- expand-native-params [_ m]
-  (params.native/expand-inner m))
-
 (defn- expand-one
   "Expand `:parameters` in one inner-query-style map that contains them."
   [outer-query {:keys [source-table source-query parameters], :as m}]
   ;; HACK - normalization does not yet operate on `:parameters` that aren't at the top level, so double-check that
   ;; they're normalized properly before proceeding.
-  (let [m (cond-> m
-            (seq parameters) (update :parameters (partial normalize/normalize-fragment [:parameters])))
-        expanded ((if (or source-table source-query)
-                    expand-mbql-params
-                    expand-native-params) outer-query m)]
+  (let [m        (cond-> m
+                   (seq parameters) (update :parameters (partial normalize/normalize-fragment [:parameters])))
+        expanded (if (or source-table source-query)
+                   (expand-mbql-params outer-query m)
+                   (params.native/expand-inner m))]
     (dissoc expanded :parameters :template-tags)))
 
 (defn- expand-all
@@ -69,7 +66,7 @@
   "Move any top-level parameters to the same level (i.e., 'inner query') as the query the affect."
   [{:keys [parameters], query-type :type, :as outer-query}]
   {:pre [(#{:query :native} query-type)]}
-  (cond-> (dissoc outer-query :parameters)
+  (cond-> (set/rename-keys outer-query {:parameters :user-parameters})
     (seq parameters)
     (assoc-in [query-type :parameters] parameters)))
 
@@ -79,7 +76,7 @@
   [outer-query]
   (-> outer-query move-top-level-params-to-inner-query expand-all))
 
-(defn- substitute-parameters*
+(s/defn ^:private substitute-parameters* :- clojure.lang.IPersistentMap
   "If any parameters were supplied then substitute them into the query."
   [query]
   (u/prog1 (expand-parameters query)
@@ -87,6 +84,20 @@
                (not= <> query))
       (when-let [diff (second (data/diff query <>))]
         (log/tracef "\n\nSubstituted params:\n%s\n" (u/pprint-to-str 'cyan diff))))))
+
+(defn- assoc-db-in-snippet-tag
+  [db template-tags]
+  (->> template-tags
+       (m/map-vals
+        (fn [v]
+          (cond-> v
+            (= (:type v) :snippet) (assoc :database db))))
+       (into {})))
+
+(defn- hoist-database-for-snippet-tags
+  "Assocs the `:database` ID from `query` in all snippet template tags."
+  [query]
+  (u/update-in-when query [:native :template-tags] (partial assoc-db-in-snippet-tag (:database query))))
 
 (defn substitute-parameters
   "Substitute Dashboard or Card-supplied parameters in a query, replacing the param placeholers with appropriate values
@@ -96,4 +107,6 @@
   A SQL query with a param like `{{param}}` will have that part of the query replaced with an appropriate snippet as
   well as any prepared statement args needed. MBQL queries will have additional filter clauses added."
   [qp]
-  (comp qp substitute-parameters*))
+  (fn [query rff context]
+    (qp ((comp substitute-parameters* hoist-database-for-snippet-tags) query)
+        rff context)))

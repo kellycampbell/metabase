@@ -1,30 +1,28 @@
 (ns metabase.api.segment-test
   "Tests for /api/segment endpoints."
   (:require [expectations :refer [expect]]
-            [metabase
-             [http-client :as http]
-             [util :as u]]
-            [metabase.middleware.util :as middleware.u]
-            [metabase.models
-             [database :refer [Database]]
-             [permissions :as perms]
-             [permissions-group :as group]
-             [revision :refer [Revision]]
-             [segment :as segment :refer [Segment]]
-             [table :refer [Table]]]
-            [metabase.test
-             [data :refer :all]
-             [util :as tu]]
+            [metabase.http-client :as http]
+            [metabase.models.database :refer [Database]]
+            [metabase.models.permissions :as perms]
+            [metabase.models.permissions-group :as group]
+            [metabase.models.revision :refer [Revision]]
+            [metabase.models.segment :as segment :refer [Segment]]
+            [metabase.models.table :refer [Table]]
+            [metabase.server.middleware.util :as middleware.u]
+            [metabase.test.data :refer :all]
             [metabase.test.data.users :refer :all]
-            [toucan
-             [db :as db]
-             [hydrate :refer [hydrate]]]
+            [metabase.test.util :as tu]
+            [metabase.util :as u]
+            [toucan.db :as db]
+            [toucan.hydrate :refer [hydrate]]
             [toucan.util.test :as tt]))
 
 ;; ## Helper Fns
 
 (defn- user-details [user]
-  (select-keys user [:email :first_name :last_login :is_qbnewb :is_superuser :id :last_name :date_joined :common_name]))
+  (select-keys
+   user
+   [:email :first_name :last_login :is_qbnewb :is_superuser :id :last_name :date_joined :common_name :locale]))
 
 (defn- segment-response [segment]
   (-> (into {} segment)
@@ -193,13 +191,14 @@
    :updated_at              true
    :archived                true
    :definition              nil}
-  (tt/with-temp* [Database [{database-id :id}]
-                  Table    [{table-id :id} {:db_id database-id}]
-                  Segment  [{:keys [id]} {:table_id table-id}]]
-    ((user->client :crowberto) :delete 204 (format "segment/%d" id) :revision_message "carryon")
-    ;; should still be able to fetch the archived segment
-    (segment-response
-     ((user->client :crowberto) :get 200 (format "segment/%d" id)))))
+  (-> (tt/with-temp* [Database [{database-id :id}]
+                      Table    [{table-id :id} {:db_id database-id}]
+                      Segment  [{:keys [id]} {:table_id table-id}]]
+        ((user->client :crowberto) :delete 204 (format "segment/%d" id) :revision_message "carryon")
+        ;; should still be able to fetch the archived segment
+        (segment-response
+         ((user->client :crowberto) :get 200 (format "segment/%d" id))))
+      (dissoc :query_description)))
 
 
 ;; ## GET /api/segment/:id
@@ -225,12 +224,13 @@
    :updated_at              true
    :archived                false
    :definition              {:filter ["=" ["field-id" 2] "cans"]}}
-  (tt/with-temp* [Database [{database-id :id}]
-                  Table    [{table-id :id} {:db_id database-id}]
-                  Segment  [{:keys [id]}   {:creator_id (user->id :crowberto)
-                                            :table_id   table-id
-                                            :definition {:filter [:= [:field-id 2] "cans"]}}]]
-    (segment-response ((user->client :rasta) :get 200 (format "segment/%d" id)))))
+  (-> (tt/with-temp* [Database [{database-id :id}]
+                      Table    [{table-id :id} {:db_id database-id}]
+                      Segment  [{:keys [id]}   {:creator_id (user->id :crowberto)
+                                                :table_id   table-id
+                                                :definition {:filter [:= [:field-id 2] "cans"]}}]]
+        (segment-response ((user->client :rasta) :get 200 (format "segment/%d" id))))
+      (dissoc :query_description)))
 
 
 ;; ## GET /api/segment/:id/revisions
@@ -379,6 +379,10 @@
                       Segment [_         {:archived true}]] ; inactive segments shouldn't show up
   (tu/mappify (hydrate [segment-1
                         segment-2] :creator))
+  (map #(dissoc % :query_description) ((user->client :rasta) :get 200 "segment/")))
+
+(expect
+  []
   ((user->client :rasta) :get 200 "segment/"))
 
 

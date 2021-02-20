@@ -1,6 +1,6 @@
 /* @flow */
 
-import { getFieldRefFromColumn } from "metabase/modes/lib/actions";
+import { fieldRefForColumn } from "metabase/lib/dataset";
 import {
   getAggregationOperator,
   isCompatibleAggregationOperatorForField,
@@ -9,28 +9,23 @@ import { t } from "ttag";
 import type {
   ClickAction,
   ClickActionProps,
-} from "metabase/meta/types/Visualization";
+} from "metabase-types/types/Visualization";
 import StructuredQuery from "metabase-lib/lib/queries/StructuredQuery";
 
 const AGGREGATIONS = {
   sum: {
     section: "sum",
+    buttonType: "token",
     title: t`Sum`,
   },
   avg: {
     section: "sum",
+    buttonType: "token",
     title: t`Avg`,
-  },
-  min: {
-    section: "sum",
-    title: t`Min`,
-  },
-  max: {
-    section: "sum",
-    title: t`Max`,
   },
   distinct: {
     section: "sum",
+    buttonType: "token",
     title: t`Distincts`,
   },
 };
@@ -66,7 +61,7 @@ export default ({
       question: () =>
         query
           // $FlowFixMe
-          .aggregate([aggregator.short, getFieldRefFromColumn(column)])
+          .aggregate([aggregator.short, fieldRefForColumn(column)])
           .question()
           .setDefaultDisplay(),
       action: () => dispatch => {

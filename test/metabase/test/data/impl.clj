@@ -1,23 +1,27 @@
 (ns metabase.test.data.impl
   "Internal implementation of various helper functions in `metabase.test.data`."
   (:require [clojure.tools.logging :as log]
-            [metabase
-             [config :as config]
-             [driver :as driver]
-             [sync :as sync]
-             [util :as u]]
-            [metabase.models
-             [database :refer [Database]]
-             [field :as field :refer [Field]]
-             [table :refer [Table]]]
+            [clojure.tools.reader.edn :as edn]
+            [metabase.config :as config]
+            [metabase.driver :as driver]
+            [metabase.models.database :refer [Database]]
+            [metabase.models.field :as field :refer [Field]]
+            [metabase.models.table :refer [Table]]
             [metabase.plugins.classloader :as classloader]
-            [metabase.test.data
-             [dataset-definitions :as defs]
-             [interface :as tx]]
+            [metabase.sync :as sync]
+            [metabase.test.data.dataset-definitions :as defs]
+            [metabase.test.data.impl.verify :as verify]
+            [metabase.test.data.interface :as tx]
             [metabase.test.initialize :as initialize]
             [metabase.test.util.timezone :as tu.tz]
-            [metabase.util.date :as du]
+            [metabase.util :as u]
+            [potemkin :as p]
             [toucan.db :as db]))
+
+(comment verify/keep-me)
+
+(p/import-vars
+ [verify verify-data-loaded-correctly])
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                          get-or-create-database!; db                                           |
@@ -58,7 +62,7 @@
                                                       table-name
                                                       (u/pprint-to-str (dissoc table-definition :rows))
                                                       (u/pprint-to-str (db/select [Table :schema :name], :db_id (:id db))))))))]
-      (doseq [{:keys [field-name visibility-type special-type], :as field-definition} (:field-definitions table-definition)]
+      (doseq [{:keys [field-name visibility-type semantic-type], :as field-definition} (:field-definitions table-definition)]
         (let [field (delay (or (tx/metabase-instance field-definition @table)
                                (throw (Exception. (format "Field '%s' not loaded from definition:\n"
                                                           field-name
@@ -66,49 +70,76 @@
           (when visibility-type
             (log/debug (format "SET VISIBILITY TYPE %s.%s -> %s" table-name field-name visibility-type))
             (db/update! Field (:id @field) :visibility_type (name visibility-type)))
-          (when special-type
-            (log/debug (format "SET SPECIAL TYPE %s.%s -> %s" table-name field-name special-type))
-            (db/update! Field (:id @field) :special_type (u/qualified-name special-type))))))))
+          (when semantic-type
+            (log/debug (format "SET SEMANTIC TYPE %s.%s -> %s" table-name field-name semantic-type))
+            (db/update! Field (:id @field) :semantic_type (u/qualified-name semantic-type))))))))
 
 (def ^:private create-database-timeout-ms
   "Max amount of time to wait for driver text extensions to create a DB and load test data."
-  (du/minutes->ms 4)) ; 4 minutes
+  (u/minutes->ms 30)) ; Redshift is slow
 
 (def ^:private sync-timeout-ms
   "Max amount of time to wait for sync to complete."
-  (du/minutes->ms 5)) ; five minutes
+  (u/minutes->ms 15))
 
-(defn- create-database! [driver {:keys [database-name], :as database-definition}]
+(defonce ^:private reference-sync-durations
+  (delay (edn/read-string (slurp "test_resources/sync-durations.edn"))))
+
+(defn- create-database! [driver {:keys [database-name table-definitions], :as database-definition}]
   {:pre [(seq database-name)]}
   (try
     ;; Create the database and load its data
     ;; ALWAYS CREATE DATABASE AND LOAD DATA AS UTC! Unless you like broken tests
     (u/with-timeout create-database-timeout-ms
-      (tu.tz/with-jvm-tz "UTC"
+      (tu.tz/with-system-timezone-id "UTC"
         (tx/create-db! driver database-definition)))
     ;; Add DB object to Metabase DB
-    (let [db (db/insert! Database
-               :name    database-name
-               :engine  (name driver)
-               :details (tx/dbdef->connection-details driver :db database-definition))]
-      ;; sync newly added DB
-      (u/with-timeout sync-timeout-ms
-        (du/profile (format "Sync %s Database %s" driver database-name)
-          (sync/sync-database! db)
-          ;; add extra metadata for fields
-          (try
-            (add-extra-metadata! database-definition db)
-            (catch Throwable e
-              (println "Error adding extra metadata:" e)))))
-      ;; make sure we're returing an up-to-date copy of the DB
-      (Database (u/get-id db)))
+    (let [connection-details (tx/dbdef->connection-details driver :db database-definition)
+          db                 (db/insert! Database
+                               :name    database-name
+                               :engine  (name driver)
+                               :details connection-details)]
+      (try
+        ;; sync newly added DB
+        (u/with-timeout sync-timeout-ms
+          (let [reference-duration (or (some-> (get @reference-sync-durations database-name) u/format-nanoseconds)
+                                       "NONE")
+                quick-sync? (not= database-name "test-data")]
+            (u/profile (format "%s %s Database %s (reference H2 duration: %s)"
+                               (if quick-sync? "QUICK sync" "Sync") driver database-name reference-duration)
+              ;; only do "quick sync" for non `test-data` datasets, because it can take literally MINUTES on CI.
+              (sync/sync-database! db (when quick-sync? {:scan :schema}))
+              ;; add extra metadata for fields
+              (try
+                (add-extra-metadata! database-definition db)
+                (catch Throwable e
+                  (println "Error adding extra metadata:" e))))))
+        ;; make sure we're returing an up-to-date copy of the DB
+        (Database (u/the-id db))
+        (catch Throwable e
+          (let [e (ex-info "Failed to create test database"
+                           {:driver             driver
+                            :database-name      database-name
+                            :connection-details connection-details}
+                           e)]
+            (println (u/pprint-to-str 'red (Throwable->map e)))
+            (db/delete! Database :id (u/the-id db))
+            (throw e)))))
     (catch Throwable e
-      (printf "Failed to create %s '%s' test database:\n" driver database-name)
-      (println e)
-      (when config/is-test?
-        (System/exit -1)))))
+      (let [message (format "Failed to create %s '%s' test database" driver database-name)]
+        (println message "\n" e)
+        (if config/is-test?
+          (System/exit -1)
+          (do
+            (println (u/format-color 'red "create-database! failed; destroying %s database %s" driver (pr-str database-name)))
+            (tx/destroy-db! driver database-definition)
+            (throw (ex-info message
+                            {:driver        driver
+                             :database-name database-name}
+                            e))))))))
 
-(defmethod get-or-create-database! :default [driver dbdef]
+(defmethod get-or-create-database! :default
+  [driver dbdef]
   (initialize/initialize-if-needed! :plugins :db)
   (let [dbdef (tx/get-dataset-definition dbdef)]
     (or
@@ -120,8 +151,7 @@
         ;; code may run inside of some other block that sets report timezone
         ;;
         ;; require/resolve used here to avoid circular refs
-        (require 'metabase.test.util)
-        ((resolve 'metabase.test.util/do-with-temporary-setting-value)
+        ((requiring-resolve 'metabase.test.util/do-with-temporary-setting-value)
          :report-timezone nil
          #(create-database! driver dbdef)))))))
 
@@ -139,6 +169,8 @@
 (defn do-with-db
   "Internal impl of `data/with-db`."
   [db f]
+  (assert (and (map? db) (integer? (:id db)))
+          (format "Not a valid database: %s" (pr-str db)))
   (binding [*get-db* (constantly db)]
     (f)))
 
@@ -151,18 +183,18 @@
   "Internal impl of `(data/id table)."
   [db-id table-name]
   {:pre [(integer? db-id) ((some-fn keyword? string?) table-name)]}
-  (let [table-id-for-name (partial db/select-one-id Table, :db_id db-id, :name)]
+  (let [table-name        (name table-name)
+        table-id-for-name (partial db/select-one-id Table, :db_id db-id, :name)]
     (or (table-id-for-name table-name)
         (table-id-for-name (let [db-name (db/select-one-field :name Database :id db-id)]
                              (tx/db-qualified-table-name db-name table-name)))
         (let [{driver :engine, db-name :name} (db/select-one [Database :engine :name] :id db-id)]
           (throw
-           (Exception. (format "No Table '%s' found for %s Database %d '%s'.\nFound: %s"
-                               table-name driver db-id db-name
+           (Exception. (format "No Table %s found for %s Database %d %s.\nFound: %s"
+                               (pr-str table-name) driver db-id (pr-str db-name)
                                (u/pprint-to-str (db/select-id->field :name Table, :db_id db-id, :active true)))))))))
 
 (defn- the-field-id* [table-id field-name & {:keys [parent-id]}]
-  {:pre [((some-fn keyword? string?) field-name)]}
   (or (db/select-one-id Field, :active true, :table_id table-id, :name field-name, :parent_id parent-id)
       (let [{db-id :db_id, table-name :name} (db/select-one [Table :name :db_id] :id table-id)
             {driver :engine, db-name :name}  (db/select-one [Database :engine :name] :id db-id)
@@ -177,6 +209,11 @@
   "Internal impl of `(data/id table field)`."
   [table-id field-name & nested-field-names]
   {:pre [(integer? table-id)]}
+  (doseq [field-name (cons field-name nested-field-names)]
+    (assert ((some-fn keyword? string?) field-name)
+            (format "Expected keyword or string field name; got ^%s %s"
+                    (some-> field-name class .getCanonicalName)
+                    (pr-str field-name))))
   (loop [parent-id (the-field-id* table-id field-name), [nested-field-name & more] nested-field-names]
     (if-not nested-field-name
       parent-id
@@ -231,7 +268,8 @@
       (try
         (copy-db-tables-and-fields! old-db-id new-db-id)
         (do-with-db new-db f)
-        (finally (db/delete! Database :id new-db-id))))))
+        (finally
+          (db/delete! Database :id new-db-id))))))
 
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -259,28 +297,7 @@
                              (binding [db/*disable-db-logging* true]
                                (let [db (get-or-create-database! driver dbdef)]
                                  (assert db)
-                                 (assert (db/exists? Database :id (u/get-id db)))
+                                 (assert (db/exists? Database :id (u/the-id db)))
                                  db))))]
     (binding [*get-db* #(get-db-for-driver (tx/driver))]
       (f))))
-
-
-;;; +----------------------------------------------------------------------------------------------------------------+
-;;; |                                               with-temp-objects                                                |
-;;; +----------------------------------------------------------------------------------------------------------------+
-
-(defn- delete-model-instance!
-  "Allows deleting a row by the model instance toucan returns when it's inserted"
-  [{:keys [id] :as instance}]
-  (db/delete! (-> instance name symbol) :id id))
-
-(defn do-with-temp-objects
-  "Internal impl of `data/with-data`. Takes a thunk `data-load-fn` that returns a seq of Toucan model instances that
-  will be deleted after `body-fn` finishes"
-  [data-load-fn body-fn]
-  (let [result-instances (data-load-fn)]
-    (try
-      (body-fn)
-      (finally
-        (doseq [instance result-instances]
-          (delete-model-instance! instance))))))

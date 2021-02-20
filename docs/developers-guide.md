@@ -1,10 +1,10 @@
 **This guide will teach you:**
 
-* [How to compile your own copy of Metabase](#build-metabase)
-* [How to set up a development environment](#development-environment)
-* [How to run the Metabase Server](#development-server-quick-start)
-* [How to contribute back to the Metabase project](#contributing)
-* [How to add support in Metabase for other languages](#internationalization)
+- [How to compile your own copy of Metabase](#build-metabase)
+- [How to set up a development environment](#development-environment)
+- [How to run the Metabase Server](#development-server-quick-start)
+- [How to contribute back to the Metabase project](#contributing)
+- [How to add support in Metabase for other languages](#internationalization)
 
 # Contributing
 
@@ -24,16 +24,27 @@ If you have problems with your development environment, make sure that you are n
 
 These are the set of tools which are required in order to complete any build of the Metabase code. Follow the links to download and install them on your own before continuing.
 
-1. [Oracle JDK 8 (http://www.oracle.com/technetwork/java/javase/downloads/index.html)](http://www.oracle.com/technetwork/java/javase/downloads/index.html)
-2. [Node.js (http://nodejs.org/)](http://nodejs.org/)
-3. [Yarn package manager for Node.js](https://yarnpkg.com/)
-4. [Leiningen (http://leiningen.org/)](http://leiningen.org/)
+1. [Clojure (ttps://clojure.org)](https://clojure.org/guides/getting_started) - install the latest release by following the guide depending on your OS
+2. [Java Development Kit JDK (https://adoptopenjdk.net/releases.html)](https://adoptopenjdk.net/releases.html) - you need to install JDK 8 (./operations-guide/java-versions.md)
+3. [Node.js (http://nodejs.org/)](http://nodejs.org/) - latest LTS release
+4. [Yarn package manager for Node.js](https://yarnpkg.com/) - latest release of version 1.x - you can install it in any OS by doing `npm install --global yarn`
+5. [Leiningen (http://leiningen.org/)](http://leiningen.org/) - latest release
+6. [GetText package (https://www.gnu.org/software/gettext/)](https://www.gnu.org/software/gettext/) - latest
+
+On a most recent stable Ubuntu/Debian, all the tools above, with the exception of Clojure, can be installed by using:
+
+```
+sudo apt install gettext openjdk-8-jdk nodejs leiningen && sudo npm install --global yarn
+```
+If you have multiple JDK versions installed in your machine, be sure to switch your JDK before building by doing `sudo update-alternatives --config java` and selecting Java 8 in the menu
 
 If you are developing on Windows, make sure to use Ubuntu on Windows and follow instructions for Ubuntu/Linux instead of installing ordinary Windows versions.
 
+Alternatively, without the need to explicitly install the above dependencies, follow the guide [on using Visual Studio Code](developers-guide-vscode.md) and its remote container support.
+
 # Build Metabase
 
-The entire Metabase application is compiled and assembled into a single .jar file which can run on any modern JVM. There is a script which will execute all steps in the process and output the final artifact for you.
+The entire Metabase application is compiled and assembled into a single .jar file which can run on any modern JVM. There is a script which will execute all steps in the process and output the final artifact for you. You can pass the environment variable MB_EDITION before running the build script to choose the version that you want to build. If you don't provide a value, the default is `oss` which will build the Community Edition.
 
     ./bin/build
 
@@ -69,7 +80,7 @@ $ yarn
 
 Run your backend development server with
 
-    lein ring server
+    lein run
 
 Start the frontend build process with
 
@@ -79,9 +90,9 @@ Start the frontend build process with
 
 We use these technologies for our FE build process to allow us to use modules, es6 syntax, and css variables.
 
-* webpack
-* babel
-* cssnext
+- webpack
+- babel
+- cssnext
 
 Frontend tasks are executed using `yarn`. All available tasks can be found in `package.json` under _scripts_.
 
@@ -115,101 +126,23 @@ All frontend tests are located in `frontend/test` directory. Run all frontend te
 yarn test
 ```
 
-which will run unit, end-to-end, and legacy Karma browser tests in sequence.
+which will run unit and Cypress end-to-end tests in sequence.
 
-### End-to-end tests
+### Cypress end-to-end tests
 
-End-to-end tests simulate realistic sequences of user interactions. They render a complete DOM tree using [Enzyme](http://airbnb.io/enzyme/docs/api/index.html) and use temporary backend instances for executing API calls.
+End-to-end tests simulate realistic sequences of user interactions. Read more about how we approach end-to-end testing with Cypress in our [wiki page](https://github.com/metabase/metabase/wiki/E2E-Tests-with-Cypress).
 
-End-to-end tests use an enforced file naming convention `<test-suite-name>.e2e.spec.js` to separate them from unit tests.
-
-Useful commands:
-
-```bash
-lein run refresh-integration-test-db-metadata # Scan the sample dataset and re-run sync/classification/field values caching
-yarn test-e2e-watch # Watches for file changes and runs the tests that have changed
-yarn test-e2e-watch TestFileName # Watches the files in paths that match the given (regex) string
-```
-
-The way integration tests are written is a little unconventional so here is an example that hopefully helps in getting up to speed:
-
-```
-import {
-    useSharedAdminLogin,
-    createTestStore,
-} from "__support__/e2e";
-import {
-    click
-} from "__support__/enzyme"
-
-import { mount } from "enzyme"
-
-import { FETCH_DATABASES } from "metabase/redux/metadata";
-import { INITIALIZE_QB } from "metabase/query_builder/actions";
-import RunButton from "metabase/query_builder/components/RunButton";
-
-describe("Query builder", () => {
-    beforeAll(async () => {
-        // Usually you want to test stuff where user is already logged in
-        // so it is convenient to login before any test case.
-        useSharedAdminLogin()
-    })
-
-    it("should let you run a new query", async () => {
-        // Create a superpowered Redux store.
-        // Remember `await` here!
-        const store = await createTestStore()
-
-        // Go to a desired path in the app. This is safest to do before mounting the app.
-        store.pushPath('/question')
-
-        // Get React container for the whole app and mount it using Enzyme
-        const app = mount(store.getAppContainer())
-
-        // Usually you want to wait until the page has completely loaded, and our way to do that is to
-        // wait until the completion of specified Redux actions. `waitForActions` is also useful for verifying that
-        // specific operations are properly executed after user interactions.
-        // Remember `await` here!
-        await store.waitForActions([FETCH_DATABASES, INITIALIZE_QB])
-
-        // You can use `enzymeWrapper.debug()` to see what is the state of DOM tree at the moment
-        console.log(app.debug())
-
-        // You can use `testStore.debug()` method to see which Redux actions have been dispatched so far.
-        // Note that as opposed to Enzyme's debugging method, you don't need to wrap the call to `console.log()`.
-        store.debug();
-
-        // For simulating user interactions like clicks and input events you should use methods defined
-        // in `enzyme.js` as they abstract away some React/Redux complexities.
-        click(app.find(RunButton))
-
-        // Note: In pretty rare cases where rendering the whole app is problematic or slow, you can just render a single
-        // React container instead with `testStore.connectContainer(container)`. In that case you are not able
-        // to click links that lead to other router paths.
-    });
-})
-```
-
-You can also skim through [`__support__/e2e.js`](https://github.com/metabase/metabase/blob/master/frontend/test/__support__/e2e.js) and [`__support__/enzyme.js`](https://github.com/metabase/metabase/blob/master/frontend/test/__support__/enzyme.js) to see all available methods.
+Cypress end-to-end tests use an enforced file naming convention `<test-suite-name>.cy.spec.js` to separate them from unit tests.
 
 ### Jest unit tests
 
 Unit tests are focused around isolated parts of business logic.
 
-Unit tests use an enforced file naming convention `<test-suite-name>.unit.spec.js` to separate them from end-to-end and integration tests.
+Unit tests use an enforced file naming convention `<test-suite-name>.unit.spec.js` to separate them from end-to-end tests.
 
 ```
 yarn test-unit # Run all tests at once
 yarn test-unit-watch # Watch for file changes
-```
-
-### Karma browser tests
-
-If you need to test code which uses browser APIs that are only available in real browsers, you can add a Karma test to `frontend/test/legacy-karma` directory.
-
-```
-yarn test-karma # Run all tests once
-yarn test-karma-watch # Watch for file changes
 ```
 
 ## Backend development
@@ -219,12 +152,6 @@ Leiningen and your REPL are the main development tools for the backend. There ar
 And of course your Jetty development server is available via
 
     lein run
-
-To automatically load backend namespaces when files are changed, you can instead run with
-
-    lein ring server
-
-`lein ring server` takes significantly longer to launch than `lein run`, so if you aren't working on backend code we'd recommend sticking to launching with `lein run`.
 
 ### Building drivers
 
@@ -295,12 +222,6 @@ You'll probably want to tell Emacs to store customizations in a different file. 
 
 ## Documentation
 
-#### Instant Cheatsheet
-
-Start up an instant cheatsheet for the project + dependencies by running
-
-    lein instant-cheatsheet
-
 ## Internationalization
 
 We are an application with lots of users all over the world. To help them use Metabase in their own language, we mark all of our strings as i18n.
@@ -316,7 +237,7 @@ const someString = t`Hello ${name}!`;
 const someJSX = <div>{jt`Hello ${name}`}</div>;
 ```
 
-and in the backend using `trs` and related macros (see more details in https://github.com/puppetlabs/clj-i18n):
+and in the backend using `trs` (to use the site language) or `tru` (to use the current User's language):
 
 ```clojure
 (trs "Hello {0}!" name)
@@ -324,10 +245,10 @@ and in the backend using `trs` and related macros (see more details in https://g
 
 ### Translation errors or missing strings
 
-If you see incorrect or missing strings for your langauge, please visit our [POEditor project](https://poeditor.com/join/project/ynjQmwSsGh) and submit your fixes there.
+If you see incorrect or missing strings for your language, please visit our [POEditor project](https://poeditor.com/join/project/ynjQmwSsGh) and submit your fixes there.
 
 ## License
 
-Copyright © 2017 Metabase, Inc
+Copyright © 2021 Metabase, Inc.
 
 Distributed under the terms of the GNU Affero General Public License (AGPL) except as otherwise noted. See individual files for details.

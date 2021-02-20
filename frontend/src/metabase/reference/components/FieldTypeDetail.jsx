@@ -28,14 +28,9 @@ const FieldTypeDetail = ({
         <span>
           {isEditing ? (
             <Select
-              triggerClasses="rounded bordered p1 inline-block"
               placeholder={t`Select a field type`}
-              value={
-                MetabaseCore.field_special_types_map[
-                  fieldTypeFormField.value
-                ] || MetabaseCore.field_special_types_map[field.special_type]
-              }
-              options={MetabaseCore.field_special_types
+              value={fieldTypeFormField.value || field.semantic_type}
+              options={MetabaseCore.field_semantic_types
                 .concat({
                   id: null,
                   name: t`No field type`,
@@ -46,12 +41,15 @@ const FieldTypeDetail = ({
                     ? !(type.id && type.id.startsWith("timestamp_"))
                     : true,
                 )}
-              onChange={type => fieldTypeFormField.onChange(type.id)}
+              optionValueFn={o => o.id}
+              onChange={({ target: { value } }) =>
+                fieldTypeFormField.onChange(value)
+              }
             />
           ) : (
             <span>
-              {getIn(MetabaseCore.field_special_types_map, [
-                field.special_type,
+              {getIn(MetabaseCore.field_semantic_types_map, [
+                field.semantic_type,
                 "name",
               ]) || t`No field type`}
             </span>
@@ -60,25 +58,19 @@ const FieldTypeDetail = ({
         <span className="ml4">
           {isEditing
             ? (isFK(fieldTypeFormField.value) ||
-                (isFK(field.special_type) &&
+                (isFK(field.semantic_type) &&
                   fieldTypeFormField.value === undefined)) && (
                 <Select
-                  triggerClasses="rounded bordered p1 inline-block"
-                  placeholder={t`Select a field type`}
-                  value={
-                    foreignKeys[foreignKeyFormField.value] ||
-                    foreignKeys[field.fk_target_field_id] || {
-                      name: t`Select a Foreign Key`,
-                    }
-                  }
+                  placeholder={t`Select a foreign key`}
+                  value={foreignKeyFormField.value || field.fk_target_field_id}
                   options={Object.values(foreignKeys)}
-                  onChange={foreignKey =>
-                    foreignKeyFormField.onChange(foreignKey.id)
+                  onChange={({ target: { value } }) =>
+                    foreignKeyFormField.onChange(value)
                   }
-                  optionNameFn={foreignKey => foreignKey.name}
+                  optionValueFn={o => o.id}
                 />
               )
-            : isFK(field.special_type) && (
+            : isFK(field.semantic_type) && (
                 <span>
                   {getIn(foreignKeys, [field.fk_target_field_id, "name"])}
                 </span>

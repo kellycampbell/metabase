@@ -2,97 +2,101 @@
   "Tests for specific behavior of the Oracle driver."
   (:require [clojure.java.jdbc :as jdbc]
             [clojure.test :refer :all]
-            [expectations :refer [expect]]
             [honeysql.core :as hsql]
-            [metabase
-             [driver :as driver]
-             [query-processor :as qp]
-             [query-processor-test :as qp.test]
-             [util :as u]]
+            [metabase.driver :as driver]
             [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
+            [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
             [metabase.driver.sql.query-processor :as sql.qp]
-            [metabase.models
-             [field :refer [Field]]
-             [table :refer [Table]]]
+            [metabase.driver.util :as driver.u]
+            [metabase.models.field :refer [Field]]
+            [metabase.models.table :refer [Table]]
+            [metabase.query-processor :as qp]
+            [metabase.query-processor-test :as qp.test]
             [metabase.query-processor.test-util :as qp.test-util]
-            [metabase.test
-             [data :as data]
-             [util :as tu]]
-            [metabase.test.data
-             [datasets :as datasets :refer [expect-with-driver]]
-             [oracle :as oracle.tx]
-             [sql :as sql.tx]]
+            [metabase.test :as mt]
+            [metabase.test.data :as data]
+            [metabase.test.data.oracle :as oracle.tx]
+            [metabase.test.data.sql :as sql.tx]
             [metabase.test.data.sql.ddl :as ddl]
+            [metabase.test.util :as tu]
             [metabase.test.util.log :as tu.log]
+            [metabase.util :as u]
             [metabase.util.honeysql-extensions :as hx]
             [toucan.util.test :as tt]))
 
 (deftest connection-details->spec-test
-  (are [message expected-spec details] (is (= expected-spec
-                                              (sql-jdbc.conn/connection-details->spec :oracle details))
-                                           message)
-    "You should be able to connect with an SID"
-    {:classname                   "oracle.jdbc.OracleDriver"
-     :subprotocol                 "oracle:thin"
-     :subname                     "@localhost:1521:ORCL"
-     :oracle.jdbc.J2EE13Compliant true}
-    {:host "localhost"
-     :port 1521
-     :sid  "ORCL"}
+  (doseq [[message expected-spec details]
+          [["You should be able to connect with an SID"
+            {:classname   "oracle.jdbc.OracleDriver"
+             :subprotocol "oracle:thin"
+             :subname     "@localhost:1521:ORCL"}
+            {:host "localhost"
+             :port 1521
+             :sid  "ORCL"}]
+           ["You should be able to specify a Service Name with no SID"
+            {:classname   "oracle.jdbc.OracleDriver"
+             :subprotocol "oracle:thin"
+             :subname     "@localhost:1521/MyCoolService"}
+            {:host         "localhost"
+             :port         1521
+             :service-name "MyCoolService"}]
+           ["You should be able to specifiy a Service Name *and* an SID"
+            {:classname   "oracle.jdbc.OracleDriver"
+             :subprotocol "oracle:thin"
+             :subname     "@localhost:1521:ORCL/MyCoolService"}
+            {:host         "localhost"
+             :port         1521
+             :service-name "MyCoolService"
+             :sid          "ORCL"}]]]
+    (is (= expected-spec
+           (sql-jdbc.conn/connection-details->spec :oracle details))
+        message)))
 
-    "You should be able to specify a Service Name with no SID"
-    {:classname                   "oracle.jdbc.OracleDriver"
-     :subprotocol                 "oracle:thin"
-     :subname                     "@localhost:1521/MyCoolService"
-     :oracle.jdbc.J2EE13Compliant true}
-    {:host         "localhost"
-     :port         1521
-     :service-name "MyCoolService"}
+(deftest require-sid-or-service-name-test
+  (testing "no SID and no Service Name should throw an exception"
+    (is (thrown?
+         AssertionError
+         (sql-jdbc.conn/connection-details->spec :oracle {:host "localhost"
+                                                          :port 1521})))
+    (is (= "You must specify the SID and/or the Service Name."
+           (try (sql-jdbc.conn/connection-details->spec :oracle {:host "localhost"
+                                                                 :port 1521})
+                (catch Throwable e
+                  (driver/humanize-connection-error-message :oracle (.getMessage e))))))))
 
-    "You should be able to specifiy a Service Name *and* an SID"
-    {:classname                   "oracle.jdbc.OracleDriver"
-     :subprotocol                 "oracle:thin"
-     :subname                     "@localhost:1521:ORCL/MyCoolService"
-     :oracle.jdbc.J2EE13Compliant true}
-    {:host         "localhost"
-     :port         1521
-     :service-name "MyCoolService"
-     :sid          "ORCL"}))
+(deftest test-ssh-connection
+  (testing "Gets an error when it can't connect to oracle via ssh tunnel"
+    (mt/test-driver :oracle
+      (is (thrown?
+           java.net.ConnectException
+           (try
+             (let [engine :oracle
+                   details {:ssl            false
+                            :password       "changeme"
+                            :tunnel-host    "localhost"
+                            :tunnel-pass    "BOGUS-BOGUS"
+                            :port           5432
+                            :dbname         "test"
+                            :host           "localhost"
+                            :tunnel-enabled true
+                            ;; we want to use a bogus port here on purpose -
+                            ;; so that locally, it gets a ConnectionRefused,
+                            ;; and in CI it does too. Apache's SSHD library
+                            ;; doesn't wrap every exception in an SshdException
+                            :tunnel-port    21212
+                            :tunnel-user    "bogus"}]
+               (tu.log/suppress-output
+                (driver.u/can-connect-with-details? engine details :throw-exceptions)))
+             (catch Throwable e
+               (loop [^Throwable e e]
+                 (or (when (instance? java.net.ConnectException e)
+                       (throw e))
+                     (some-> (.getCause e) recur))))))))))
 
-;; no SID and not Service Name should throw an exception
-(expect
-  AssertionError
-  (sql-jdbc.conn/connection-details->spec :oracle {:host "localhost"
-                                                   :port 1521}))
-
-(expect
-  "You must specify the SID and/or the Service Name."
-  (try (sql-jdbc.conn/connection-details->spec :oracle {:host "localhost"
-                                                        :port 1521})
-       (catch Throwable e
-         (driver/humanize-connection-error-message :oracle (.getMessage e)))))
-
-(expect
-  com.jcraft.jsch.JSchException
-  (let [engine  :oracle
-        details {:ssl            false
-                 :password       "changeme"
-                 :tunnel-host    "localhost"
-                 :tunnel-pass    "BOGUS-BOGUS-BOGUS"
-                 :port           12345
-                 :service-name   "test"
-                 :sid            "asdf"
-                 :host           "localhost"
-                 :tunnel-enabled true
-                 :tunnel-port    22
-                 :user           "postgres"
-                 :tunnel-user    "example"}]
-    (tu.log/suppress-output
-      (driver/can-connect? :oracle details))))
-
-(expect-with-driver :oracle
-  "UTC"
-  (tu/db-timezone-id))
+(deftest timezone-id-test
+  (mt/test-driver :oracle
+    (is (= "UTC"
+           (tu/db-timezone-id)))))
 
 (deftest insert-rows-ddl-test
   (is (= [[(str "INSERT ALL"
@@ -105,8 +109,8 @@
                                                                                             {:col1 "B", :col2 2}]))
       "Make sure we're generating correct DDL for Oracle to insert all rows at once."))
 
-(defn- do-with-temp-user [f]
-  (let [username (tu/random-name)]
+(defn- do-with-temp-user [username f]
+  (let [username (or username (tu/random-name))]
     (try
       (oracle.tx/create-user! username)
       (f username)
@@ -115,37 +119,57 @@
 
 (defmacro ^:private with-temp-user
   "Run `body` with a temporary user bound, binding their name to `username-binding`. Use this to create the equivalent
-  of temporary one-off databases."
-  [[username-binding] & body]
-  `(do-with-temp-user (fn [~username-binding] ~@body)))
+  of temporary one-off databases. A particular username can be passed in as the binding or else one is generated with
+  `tu/random-name`."
+  [[username-binding & [username]] & body]
+  `(do-with-temp-user ~username (fn [~username-binding] ~@body)))
 
 
-;; Make sure Oracle CLOBs are returned as text (#9026)
-(expect-with-driver :oracle
-  [[1M "Hello"]
-   [2M nil]]
-  (let [details  (:details (data/db))
-        spec     (sql-jdbc.conn/connection-details->spec :oracle details)
-        execute! (fn [format-string & args]
-                   (jdbc/execute! spec (apply format format-string args)))
-        pk-type  (sql.tx/pk-sql-type :oracle)]
-    (with-temp-user [username]
-      (execute! "CREATE TABLE \"%s\".\"messages\" (\"id\" %s, \"message\" CLOB)"            username pk-type)
-      (execute! "INSERT INTO \"%s\".\"messages\" (\"id\", \"message\") VALUES (1, 'Hello')" username)
-      (execute! "INSERT INTO \"%s\".\"messages\" (\"id\", \"message\") VALUES (2, NULL)"    username)
-      (tt/with-temp* [Table [table {:schema username, :name "messages", :db_id (data/id)}]
-                      Field [_     {:table_id (u/get-id table), :name "id",      :base_type "type/Integer"}]
-                      Field [_     {:table_id (u/get-id table), :name "message", :base_type "type/Text"}]]
-        (qp.test/rows
-          (qp/process-query
-            {:database (data/id)
-             :type     :query
-             :query    {:source-table (u/get-id table)}}))))))
+(deftest return-clobs-as-text-test
+  (mt/test-driver :oracle
+    (testing "Make sure Oracle CLOBs are returned as text (#9026)"
+      (let [details  (:details (data/db))
+            spec     (sql-jdbc.conn/connection-details->spec :oracle details)
+            execute! (fn [format-string & args]
+                       (jdbc/execute! spec (apply format format-string args)))
+            pk-type  (sql.tx/pk-sql-type :oracle)]
+        (with-temp-user [username]
+          (execute! "CREATE TABLE \"%s\".\"messages\" (\"id\" %s, \"message\" CLOB)"            username pk-type)
+          (execute! "INSERT INTO \"%s\".\"messages\" (\"id\", \"message\") VALUES (1, 'Hello')" username)
+          (execute! "INSERT INTO \"%s\".\"messages\" (\"id\", \"message\") VALUES (2, NULL)"    username)
+          (tt/with-temp* [Table [table    {:schema username, :name "messages", :db_id (data/id)}]
+                          Field [id-field {:table_id (u/get-id table), :name "id", :base_type "type/Integer"}]
+                          Field [_        {:table_id (u/get-id table), :name "message", :base_type "type/Text"}]]
+            (is (= [[1M "Hello"]
+                    [2M nil]]
+                   (qp.test/rows
+                     (qp/process-query
+                      {:database (data/id)
+                       :type     :query
+                       :query    {:source-table (u/get-id table)
+                                  :order-by     [[:asc [:field-id (u/get-id id-field)]]]}}))))))))))
+
+(deftest handle-slashes-test
+  (mt/test-driver :oracle
+    (let [details  (:details (data/db))
+          spec     (sql-jdbc.conn/connection-details->spec :oracle details)
+          execute! (fn [format-string & args]
+                     (jdbc/execute! spec (apply format format-string args)))
+          pk-type  (sql.tx/pk-sql-type :oracle)
+          schema   (str (tu/random-name) "/")]
+      (with-temp-user [username schema]
+        (execute! "CREATE TABLE \"%s\".\"mess/ages/\" (\"id\" %s, \"column1\" varchar(200))" username pk-type)
+        (testing "Sync can handle slashes in the schema and tablenames"
+          (is (= #{"id" "column1"}
+                 (into #{}
+                       (map :name)
+                       (:fields
+                        (sql-jdbc.sync/describe-table :oracle spec {:name "mess/ages/" :schema username}))))))))))
 
 ;; let's make sure we're actually attempting to generate the correctl HoneySQL for joins and source queries so we
 ;; don't sit around scratching our heads wondering why the queries themselves aren't working
 (deftest honeysql-test
-  (datasets/test-driver :oracle
+  (mt/test-driver :oracle
     (is (= {:select [:*]
             :from   [{:select
                       [[(hx/identifier :field oracle.tx/session-schema "test_data_venues" "id")
@@ -179,7 +203,7 @@
                  :order-by     [[:asc $id]]
                  :filter       [:=
                                 [:joined-field "test_data_categories__via__cat" $categories.name]
-                                [:value "BBQ" {:base_type :type/Text, :special_type :type/Name, :database_type "VARCHAR"}]]
+                                [:value "BBQ" {:base_type :type/Text, :semantic_type :type/Name, :database_type "VARCHAR"}]]
                  :fields       [$id $name $category_id $latitude $longitude $price]
                  :limit        100
                  :joins        [{:source-table $$categories

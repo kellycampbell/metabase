@@ -2,7 +2,7 @@
 
 import { createSelector } from "reselect";
 import _ from "underscore";
-import { getIn, updateIn } from "icepick";
+import { getIn, assocIn, updateIn } from "icepick";
 
 // Needed due to wrong dependency resolution order
 // eslint-disable-next-line no-unused-vars
@@ -29,6 +29,8 @@ export const getUiControls = state => state.qb.uiControls;
 
 export const getIsShowingTemplateTagsEditor = state =>
   getUiControls(state).isShowingTemplateTagsEditor;
+export const getIsShowingSnippetSidebar = state =>
+  getUiControls(state).isShowingSnippetSidebar;
 export const getIsShowingDataReference = state =>
   getUiControls(state).isShowingDataReference;
 export const getIsShowingRawTable = state =>
@@ -50,6 +52,8 @@ export const getSettings = state => state.settings.values;
 
 export const getIsNew = state => state.qb.card && !state.qb.card.id;
 
+export const getQueryStartTime = state => state.qb.queryStartTime;
+
 export const getDatabaseId = createSelector(
   [getCard],
   card => card && card.dataset_query && card.dataset_query.database,
@@ -65,7 +69,7 @@ export const getTableForeignKeyReferences = state =>
 
 export const getDatabasesList = state =>
   Databases.selectors.getList(state, {
-    entityQuery: { include_tables: true, include_cards: true },
+    entityQuery: { include: "tables", saved: true },
   }) || [];
 
 export const getTables = createSelector(
@@ -143,6 +147,30 @@ const getNextRunParameterValues = createSelector(
     parameters.map(parameter => parameter.value).filter(p => p !== undefined),
 );
 
+// Certain differences in a query should be ignored. `normalizeQuery`
+// standardizes the query before comparision in `getIsResultDirty`.
+function normalizeQuery(query, tableMetadata) {
+  if (!query) {
+    return query;
+  }
+  if (query.query && tableMetadata) {
+    query = updateIn(query, ["query", "fields"], fields => {
+      fields = fields
+        ? // if the query has fields, copy them before sorting
+          [...fields]
+        : // if the fields aren't set, we get them from the table metadata
+          tableMetadata.fields.map(({ id }) => ["field-id", id]);
+      return fields.sort((a, b) =>
+        JSON.stringify(b).localeCompare(JSON.stringify(a)),
+      );
+    });
+  }
+  if (query.native && query.native["template-tags"] == null) {
+    query = assocIn(query, ["native", "template-tags"], {});
+  }
+  return query;
+}
+
 export const getIsResultDirty = createSelector(
   [
     getLastRunDatasetQuery,
@@ -158,22 +186,8 @@ export const getIsResultDirty = createSelector(
     nextParameters,
     tableMetadata,
   ) => {
-    // this function sorts fields so that reordering doesn't dirty the result
-    const queryWithSortedFields = query =>
-      query && query.query && tableMetadata
-        ? updateIn(query, ["query", "fields"], fields => {
-            fields = fields
-              ? // if the query has fields, copy them before sorting
-                [...fields]
-              : // if the fields aren't set, we get them from the table metadata
-                tableMetadata.fields.map(({ id }) => ["field-id", id]);
-            return fields.sort((a, b) =>
-              JSON.stringify(b).localeCompare(JSON.stringify(a)),
-            );
-          })
-        : query;
-    lastDatasetQuery = queryWithSortedFields(lastDatasetQuery);
-    nextDatasetQuery = queryWithSortedFields(nextDatasetQuery);
+    lastDatasetQuery = normalizeQuery(lastDatasetQuery, tableMetadata);
+    nextDatasetQuery = normalizeQuery(nextDatasetQuery, tableMetadata);
     return (
       !Utils.equals(lastDatasetQuery, nextDatasetQuery) ||
       !Utils.equals(lastParameters, nextParameters)
@@ -332,6 +346,58 @@ export const getIsNativeEditorOpen = createSelector(
   (isNative, uiControls) => isNative && uiControls.isNativeEditorOpen,
 );
 
+const getNativeEditorSelectedRange = createSelector(
+  [getUiControls],
+  uiControls => uiControls && uiControls.nativeEditorSelectedRange,
+);
+
+function getOffsetForQueryAndPosition(queryText, { row, column }) {
+  const queryLines = queryText.split("\n");
+  return (
+    // the total length of the previous rows
+    queryLines
+      .slice(0, row)
+      .reduce((sum, rowContent) => sum + rowContent.length, 0) +
+    // the newlines that were removed by split
+    row +
+    // the preceding characters in the row with the cursor
+    column
+  );
+}
+
+export const getNativeEditorCursorOffset = createSelector(
+  [getNativeEditorSelectedRange, getNextRunDatasetQuery],
+  (selectedRange, query) => {
+    if (selectedRange == null || query == null || query.native == null) {
+      return null;
+    }
+    return getOffsetForQueryAndPosition(query.native.query, selectedRange.end);
+  },
+);
+
+export const getNativeEditorSelectedText = createSelector(
+  [getNativeEditorSelectedRange, getNextRunDatasetQuery],
+  (selectedRange, query) => {
+    if (selectedRange == null || query == null || query.native == null) {
+      return null;
+    }
+    const queryText = query.native.query;
+    const start = getOffsetForQueryAndPosition(queryText, selectedRange.start);
+    const end = getOffsetForQueryAndPosition(queryText, selectedRange.end);
+    return queryText.slice(start, end);
+  },
+);
+
+export const getModalSnippet = createSelector(
+  [getUiControls],
+  uiControls => uiControls && uiControls.modalSnippet,
+);
+
+export const getSnippetCollectionId = createSelector(
+  [getUiControls],
+  uiControls => uiControls && uiControls.snippetCollectionId,
+);
+
 /**
  * Returns whether the query can be "preview", i.e. native query editor is open and visualization is table
  * NOTE: completely disabled for now
@@ -359,7 +425,7 @@ export const getIsVisualized = createSelector(
   (question, settings) =>
     question &&
     // table is the default
-    (question.display() !== "table" ||
+    ((question.display() !== "table" && question.display() !== "pivot") ||
       // any "table." settings has been explcitly set
       Object.keys(question.settings()).some(k => k.startsWith("table.")) ||
       // "table.pivot" setting has been implicitly set to true

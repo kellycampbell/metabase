@@ -11,25 +11,35 @@ import Ellipsified from "metabase/components/Ellipsified";
 import Icon from "metabase/components/Icon";
 import MiniBar from "./MiniBar";
 
+import ExternalLink from "metabase/components/ExternalLink";
+
 import { formatValue } from "metabase/lib/formatting";
 import {
   getTableCellClickedObject,
   isColumnRightAligned,
 } from "metabase/visualizations/lib/table";
 import { getColumnExtent } from "metabase/visualizations/lib/utils";
+import { HARD_ROW_LIMIT } from "metabase/lib/query";
 
 import { t } from "ttag";
 import cx from "classnames";
 import _ from "underscore";
+import { getIn } from "icepick";
 
 import { isID, isFK } from "metabase/lib/schema_metadata";
 
-import type { VisualizationProps } from "metabase/meta/types/Visualization";
+import type {
+  ClickObject,
+  VisualizationProps,
+} from "metabase-types/types/Visualization";
 
 type Props = VisualizationProps & {
   height: number,
   className?: string,
   isPivoted: boolean,
+  getColumnTitle: number => string,
+  getExtraDataForClick?: Function,
+  limit?: number,
 };
 
 type State = {
@@ -90,16 +100,26 @@ export default class TableSimple extends Component {
     }
   }
 
+  visualizationIsClickable(clicked: ?ClickObject) {
+    const { onVisualizationClick, visualizationIsClickable } = this.props;
+    return (
+      onVisualizationClick &&
+      visualizationIsClickable &&
+      visualizationIsClickable(clicked)
+    );
+  }
+
   render() {
     const {
       data,
       onVisualizationClick,
-      visualizationIsClickable,
       isPivoted,
       settings,
       getColumnTitle,
+      card,
     } = this.props;
     const { rows, cols } = data;
+    const limit = getIn(card, ["dataset_query", "query", "limit"]) || undefined;
     const getCellBackgroundColor = settings["table._cell_background_getter"];
 
     const { page, pageSize, sortColumn, sortDescending } = this.state;
@@ -109,10 +129,24 @@ export default class TableSimple extends Component {
 
     let rowIndexes = _.range(0, rows.length);
     if (sortColumn != null) {
-      rowIndexes = _.sortBy(rowIndexes, rowIndex => rows[rowIndex][sortColumn]);
+      rowIndexes = _.sortBy(rowIndexes, rowIndex => {
+        let value = rows[rowIndex][sortColumn];
+        // for strings we should be case insensitive
+        if (typeof value === "string") {
+          value = value.toLowerCase();
+        }
+        return value;
+      });
       if (sortDescending) {
         rowIndexes.reverse();
       }
+    }
+
+    let paginateMessage;
+    if (limit === undefined && rows.length >= HARD_ROW_LIMIT) {
+      paginateMessage = t`Rows ${start + 1}-${end + 1} of first ${rows.length}`;
+    } else {
+      paginateMessage = t`Rows ${start + 1}-${end + 1} of ${rows.length}`;
     }
 
     return (
@@ -169,14 +203,41 @@ export default class TableSimple extends Component {
                       const column = cols[columnIndex];
                       const clicked = getTableCellClickedObject(
                         data,
+                        settings,
                         rowIndex,
                         columnIndex,
                         isPivoted,
                       );
-                      const isClickable =
-                        onVisualizationClick &&
-                        visualizationIsClickable(clicked);
                       const columnSettings = settings.column(column);
+
+                      const extraData = this.props.getExtraDataForClick
+                        ? this.props.getExtraDataForClick(clicked)
+                        : {};
+
+                      const cellData =
+                        value == null ? (
+                          "-"
+                        ) : columnSettings["show_mini_bar"] ? (
+                          <MiniBar
+                            value={value}
+                            options={columnSettings}
+                            extent={getColumnExtent(cols, rows, columnIndex)}
+                          />
+                        ) : (
+                          formatValue(value, {
+                            ...columnSettings,
+                            clicked: { ...clicked, extraData },
+                            type: "cell",
+                            jsx: true,
+                            rich: true,
+                          })
+                        );
+
+                      // $FlowFixMe: proper test for a React element?
+                      const isLink = cellData && cellData.type === ExternalLink;
+                      const isClickable =
+                        !isLink && this.visualizationIsClickable(clicked);
+
                       return (
                         <td
                           key={columnIndex}
@@ -210,31 +271,13 @@ export default class TableSimple extends Component {
                                     onVisualizationClick({
                                       ...clicked,
                                       element: e.currentTarget,
+                                      extraData,
                                     });
                                   }
                                 : undefined
                             }
                           >
-                            {value == null ? (
-                              "-"
-                            ) : columnSettings["show_mini_bar"] ? (
-                              <MiniBar
-                                value={value}
-                                options={columnSettings}
-                                extent={getColumnExtent(
-                                  cols,
-                                  rows,
-                                  columnIndex,
-                                )}
-                              />
-                            ) : (
-                              formatValue(value, {
-                                ...columnSettings,
-                                type: "cell",
-                                jsx: true,
-                                rich: true,
-                              })
-                            )}
+                            {cellData}
                           </span>
                         </td>
                       );
@@ -250,9 +293,7 @@ export default class TableSimple extends Component {
             ref="footer"
             className="p1 flex flex-no-shrink flex-align-right fullscreen-normal-text fullscreen-night-text"
           >
-            <span className="text-bold">{t`Rows ${start + 1}-${end + 1} of ${
-              rows.length
-            }`}</span>
+            <span className="text-bold">{paginateMessage}</span>
             <span
               className={cx("text-brand-hover px1 cursor-pointer", {
                 disabled: start === 0,

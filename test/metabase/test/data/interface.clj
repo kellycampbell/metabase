@@ -9,32 +9,27 @@
             [clojure.tools.reader.edn :as edn]
             [environ.core :refer [env]]
             [medley.core :as m]
-            [metabase
-             [db :as mdb]
-             [driver :as driver]
-             [util :as u]]
-            [metabase.models
-             [database :refer [Database]]
-             [field :as field :refer [Field]]
-             [table :refer [Table]]]
+            [metabase.db :as mdb]
+            [metabase.driver :as driver]
+            [metabase.models.database :refer [Database]]
+            [metabase.models.field :as field :refer [Field]]
+            [metabase.models.table :refer [Table]]
             [metabase.plugins.classloader :as classloader]
-            [metabase.query-processor.middleware.annotate :as annotate]
-            [metabase.query-processor.store :as qp.store]
+            [metabase.query-processor :as qp]
             [metabase.test.initialize :as initialize]
-            [metabase.util
-             [date :as du]
-             [schema :as su]]
+            [metabase.util :as u]
+            [metabase.util.date-2 :as u.date]
+            [metabase.util.schema :as su]
             [potemkin.types :as p.types]
             [pretty.core :as pretty]
             [schema.core :as s]
-            [toucan.db :as db])
-  (:import clojure.lang.Keyword))
+            [toucan.db :as db]))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                   Dataset Definition Record Types & Protocol                                   |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
-(p.types/defrecord+ FieldDefinition [field-name base-type special-type visibility-type fk field-comment])
+(p.types/defrecord+ FieldDefinition [field-name base-type semantic-type visibility-type fk field-comment])
 
 (p.types/defrecord+ TableDefinition [table-name field-definitions rows table-comment])
 
@@ -43,9 +38,9 @@
 (def ^:private FieldDefinitionSchema
   {:field-name                       su/NonBlankString
    :base-type                        (s/cond-pre {:native su/NonBlankString} su/FieldType)
-   (s/optional-key :special-type)    (s/maybe su/FieldType)
+   (s/optional-key :semantic-type)   (s/maybe su/FieldType)
    (s/optional-key :visibility-type) (s/maybe (apply s/enum field/visibility-types))
-   (s/optional-key :fk)              (s/maybe s/Keyword)
+   (s/optional-key :fk)              (s/maybe su/KeywordOrString)
    (s/optional-key :field-comment)   (s/maybe su/NonBlankString)})
 
 (def ^:private ValidFieldDefinition
@@ -65,6 +60,7 @@
     :table-definitions [ValidTableDefinition]}
    (partial instance? DatabaseDefinition)))
 
+;; TODO - this should probably be a protocol instead
 (defmulti ^DatabaseDefinition get-dataset-definition
   "Return a definition of a dataset, so a test database can be created from it."
   {:arglists '([this])}
@@ -95,7 +91,7 @@
 ;;; |                                            Loading Test Extensions                                             |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
-(declare before-run after-run)
+(declare before-run)
 
 (defonce ^:private has-done-before-run (atom #{}))
 
@@ -112,17 +108,12 @@
         (swap! has-done-before-run conj driver)))))
 
 
-(defonce ^:private require-lock (Object.))
-
 (defn- require-driver-test-extensions-ns [driver & require-options]
   (let [expected-ns (symbol (or (namespace driver)
                                 (str "metabase.test.data." (name driver))))]
-    ;; ...and lock to make sure that multithreaded driver test-extension loading (on the off chance that it happens
-    ;; in tests) doesn't make Clojure explode
-    (locking require-lock
-      (println (format "Loading driver %s test extensions %s"
-                       (u/format-color 'blue driver) (apply list 'require expected-ns require-options)))
-      (apply classloader/require expected-ns require-options))))
+    (println (format "Loading driver %s test extensions %s"
+                     (u/format-color 'blue driver) (apply list 'require expected-ns require-options)))
+    (apply classloader/require expected-ns require-options)))
 
 (defonce ^:private has-loaded-extensions (atom #{}))
 
@@ -130,7 +121,7 @@
   (when-not (contains? @has-loaded-extensions driver)
     (locking has-loaded-extensions
       (when-not (contains? @has-loaded-extensions driver)
-        (du/profile (format "Load %s test extensions" driver)
+        (u/profile (format "Load %s test extensions" driver)
           (require-driver-test-extensions-ns driver)
           ;; if it doesn't have test extensions yet, it may be because it's relying on a parent driver to add them (e.g.
           ;; Redshift uses Postgres' test extensions). Load parents as appropriate and try again
@@ -175,7 +166,7 @@
   []
   (the-driver-with-test-extensions (or driver/*driver* :h2)))
 
-(defn escaped-name
+(defn escaped-database-name
   "Return escaped version of database name suitable for use as a filename / database name / etc."
   ^String [^DatabaseDefinition {:keys [database-name]}]
   {:pre [(string? database-name)]}
@@ -252,27 +243,6 @@
 
 (defmethod before-run ::test-extensions [_]) ; default-impl is a no-op
 
-
-(defmulti ^:deprecated after-run
-  "Do any cleanup needed after tests are finished running, such as deleting test databases. Use this
-  in place of writing expectations `:after-run` functions, since the driver namespaces are lazily loaded and might
-  not be loaded in time to register those functions with expectations.
-
-  Will only be called once for a given driver; only called when running tests against that driver. This method does
-  not need to call the implementation for any parent drivers; that is done automatically.
-
-  DO NOT CALL THIS METHOD DIRECTLY; THIS IS CALLED AUTOMATICALLY WHEN APPROPRIATE.
-
-  DEPRECATED - this is no longer called automatically when tests conclude due to our switch to `clojure.test`. You
-  should not rely on it for performing cleanup when tests are complete. This may be fixed in the future (PRs
-  welcome)."
-  {:arglists '([driver])}
-  dispatch-on-driver-with-test-extensions
-  :hierarchy #'driver/hierarchy)
-
-(defmethod after-run ::test-extensions [_]) ; default-impl is a no-op
-
-
 (defmulti dbdef->connection-details
   "Return the connection details map that should be used to connect to the Database we will create for
   `database-definition`.
@@ -284,17 +254,29 @@
   dispatch-on-driver-with-test-extensions
   :hierarchy #'driver/hierarchy)
 
-
 (defmulti create-db!
   "Create a new database from `database-definition`, including adding tables, fields, and foreign key constraints,
-  and add the appropriate data. This method should drop existing databases with the same name if applicable, unless
-  the skip-drop-db? arg is true. This is to workaround a scenario where the postgres driver terminates the connection
-  before dropping the DB and causes some tests to fail. (This refers to creating the actual *DBMS* database itself,
-  *not* a Metabase `Database` object.)
+  and load the appropriate data. (This refers to creating the actual *DBMS* database itself, *not* a Metabase
+  `Database` object.)
 
   Optional `options` as third param. Currently supported options include `skip-drop-db?`. If unspecified,
-  `skip-drop-db?` should default to `false`."
+  `skip-drop-db?` should default to `false`.
+
+  This method should drop existing databases with the same name if applicable, unless the `skip-drop-db?` arg is
+  truthy. This is to work around a scenario where the Postgres driver terminates the connection before dropping the DB
+  and causes some tests to fail.
+
+  This method is not expected to return anything; use `dbdef->connection-details` to get connection details for this
+  database after you create it."
   {:arglists '([driver database-definition & {:keys [skip-drop-db?]}])}
+  dispatch-on-driver-with-test-extensions
+  :hierarchy #'driver/hierarchy)
+
+(defmulti destroy-db!
+  "Destroy the database created for `database-definition`, if one exists. This is only called if loading data fails for
+  one reason or another, to revert the changes made thus far; implementations should clean up everything related to
+  the database in question."
+  {:arglists '([driver database-definition])}
   dispatch-on-driver-with-test-extensions
   :hierarchy #'driver/hierarchy)
 
@@ -348,27 +330,36 @@
 
 (defmethod aggregate-column-info ::test-extensions
   ([_ aggregation-type]
-   ;; TODO - cumulative count doesn't require a FIELD !!!!!!!!!
-   (assert (= aggregation-type) :count)
-   {:base_type    :type/Integer
-    :special_type :type/Number
-    :name         "count"
-    :display_name "Count"
-    :source       :aggregation
-    :field_ref    [:aggregation 0]})
+   ;; TODO - Can `:cum-count` be used without args as well ??
+   (assert (= aggregation-type :count))
+   {:base_type     :type/BigInteger
+    :semantic_type :type/Number
+    :name          "count"
+    :display_name  "Count"
+    :source        :aggregation
+    :field_ref     [:aggregation 0]})
 
-  ([driver aggregation-type {field-id :id, :keys [table_id]}]
-   {:pre [table_id]}
-   (driver/with-driver driver
-     (qp.store/with-store
-       (qp.store/fetch-and-store-database! (db/select-one-field :db_id Table :id table_id))
-       (qp.store/fetch-and-store-fields! [field-id])
-       (merge
-        (annotate/col-info-for-aggregation-clause {} [aggregation-type [:field-id field-id]])
-        {:source    :aggregation
-         :field_ref [:aggregation 0]}
-        (when (#{:count :cum-count} aggregation-type)
-          {:base_type :type/Integer, :special_type :type/Number}))))))
+  ([driver aggregation-type {field-id :id, table-id :table_id}]
+   {:pre [(some? table-id)]}
+   (first (qp/query->expected-cols {:database (db/select-one-field :db_id Table :id table-id)
+                                    :type     :query
+                                    :query    {:source-table table-id
+                                               :aggregation  [[aggregation-type [:field-id field-id]]]}}))))
+
+
+(defmulti count-with-template-tag-query
+  "Generate a native query for the count of rows in `table` matching a set of conditions where `field-name` is equal to
+  a param `value`."
+  {:arglists '([driver table-name field-name param-type])}
+  dispatch-on-driver-with-test-extensions
+  :hierarchy #'driver/hierarchy)
+
+(defmulti count-with-field-filter-query
+  "Generate a native query that returns the count of a Table with `table-name` with a field filter against a Field with
+  `field-name`."
+  {:arglists '([driver table-name field-name])}
+  dispatch-on-driver-with-test-extensions
+  :hierarchy #'driver/hierarchy)
 
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -465,7 +456,9 @@
   directory. (Filename should be `dataset-name` + `.edn`.)"
   [dataset-name :- su/NonBlankString]
   (let [get-def (delay
-                  (let [file-contents (edn/read-string (slurp (str edn-definitions-dir dataset-name ".edn")))]
+                  (let [file-contents (edn/read-string
+                                       {:eof nil, :readers {'t #'u.date/parse}}
+                                       (slurp (str edn-definitions-dir dataset-name ".edn")))]
                     (apply dataset-definition dataset-name file-contents)))]
     (EDNDatasetDefinition. dataset-name get-def)))
 

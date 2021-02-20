@@ -33,9 +33,8 @@
   The frontend, on the rare occasion it generates a query that explicitly specifies an `order-by` clause, usually will
   generate one that directly corresponds to the bad example above. This middleware finds these cases and rewrites the
   query to look like the good example."
-  (:require [metabase.mbql
-             [schema :as mbql.s]
-             [util :as mbql.u]]
+  (:require [metabase.mbql.schema :as mbql.s]
+            [metabase.mbql.util :as mbql.u]
             [schema.core :as s]))
 
 (s/defn ^:private reconcile-bucketing :- mbql.s/Query
@@ -94,4 +93,5 @@
    {:query {:breakout [[:datetime-field [:field-id 1] :day]]
             :order-by [[:datetime-field [:asc [:field-id 1]] :day]]}"
   [qp]
-  (comp qp reconcile-bucketing-if-needed))
+  (fn [query rff context]
+    (qp (reconcile-bucketing-if-needed query) rff context)))

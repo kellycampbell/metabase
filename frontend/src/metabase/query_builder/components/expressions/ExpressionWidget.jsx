@@ -6,6 +6,9 @@ import ExpressionEditorTextfield from "./ExpressionEditorTextfield";
 import { isExpression } from "metabase/lib/expressions";
 import MetabaseSettings from "metabase/lib/settings";
 
+import ExternalLink from "metabase/components/ExternalLink";
+
+// TODO: combine with ExpressionPopover
 export default class ExpressionWidget extends Component {
   static propTypes = {
     expression: PropTypes.array,
@@ -37,6 +40,11 @@ export default class ExpressionWidget extends Component {
     return !!name && !error && isExpression(expression);
   }
 
+  handleCommit = () => {
+    this.props.onChangeExpression(this.state.name, this.state.expression);
+    this.props.onClose();
+  };
+
   render() {
     const { query } = this.props;
     const { expression } = this.state;
@@ -49,8 +57,6 @@ export default class ExpressionWidget extends Component {
             <ExpressionEditorTextfield
               expression={expression}
               query={query}
-              tableMetadata={query.tableMetadata()} // DEPRECATED
-              customFields={query.customFields()} // DEPRECATED
               onChange={parsedExpression =>
                 this.setState({ expression: parsedExpression, error: null })
               }
@@ -59,14 +65,14 @@ export default class ExpressionWidget extends Component {
             <p className="h5 text-medium">
               {t`Think of this as being kind of like writing a formula in a spreadsheet program: you can use numbers, fields in this table, mathematical symbols like +, and some functions. So you could type something like Subtotal - Cost.`}
               &nbsp;
-              <a
+              <ExternalLink
                 className="link"
                 target="_blank"
                 href={MetabaseSettings.docsUrl(
-                  "users-guide/04-asking-questions",
-                  "creating-a-custom-field",
+                  "users-guide/custom-questions",
+                  "creating-custom-columns",
                 )}
-              >{t`Learn more`}</a>
+              >{t`Learn more`}</ExternalLink>
             </p>
           </div>
 
@@ -78,6 +84,11 @@ export default class ExpressionWidget extends Component {
               value={this.state.name}
               placeholder={t`Something nice and descriptive`}
               onChange={event => this.setState({ name: event.target.value })}
+              onKeyPress={e => {
+                if (e.key === "Enter" && this.isValid()) {
+                  this.handleCommit();
+                }
+              }}
             />
           </div>
         </div>

@@ -3,7 +3,7 @@
 import React from "react";
 import { t } from "ttag";
 import StructuredQuery from "metabase-lib/lib/queries/StructuredQuery";
-import { getFieldRefFromColumn } from "metabase/modes/lib/actions";
+import { fieldRefForColumn } from "metabase/lib/dataset";
 import {
   getAggregationOperator,
   isCompatibleAggregationOperatorForField,
@@ -13,7 +13,7 @@ import { capitalize } from "metabase/lib/formatting";
 import type {
   ClickAction,
   ClickActionProps,
-} from "metabase/meta/types/Visualization";
+} from "metabase-types/types/Visualization";
 
 export default ({
   question,
@@ -37,7 +37,9 @@ export default ({
     )
     .map(aggregator => ({
       name: "summarize-by-time",
-      section: "distribution",
+      buttonType: "horizontal",
+      section: "summarize",
+      icon: "line",
       title: (
         <span>
           {capitalize(aggregator.short)} {t`over time`}
@@ -47,9 +49,9 @@ export default ({
         question
           .aggregate(
             aggregator.requiresField
-              ? [aggregator.short, getFieldRefFromColumn(column)]
+              ? [aggregator.short, fieldRefForColumn(column)]
               : [aggregator.short],
           )
-          .pivot([dateDimension.defaultDimension().mbql()]),
+          .pivot([dateDimension.defaultBreakout()]),
     }));
 };

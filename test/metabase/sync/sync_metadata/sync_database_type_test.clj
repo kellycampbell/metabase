@@ -1,15 +1,13 @@
 (ns metabase.sync.sync-metadata.sync-database-type-test
   "Tests to make sure the newly added Field.database_type field gets populated, even for existing Fields."
   (:require [expectations :refer :all]
-            [metabase
-             [sync :as sync]
-             [util :as u]]
-            [metabase.models
-             [database :refer [Database]]
-             [field :refer [Field]]
-             [table :refer [Table]]]
+            [metabase.models.database :refer [Database]]
+            [metabase.models.field :refer [Field]]
+            [metabase.models.table :refer [Table]]
+            [metabase.sync :as sync]
             [metabase.sync.util-test :as sut]
             [metabase.test.data :as data]
+            [metabase.util :as u]
             [toucan.db :as db]
             [toucan.util.test :as tt]))
 
@@ -30,7 +28,6 @@
       ;; ok, now give all the Fields `?` as their `database_type`. (This is what the DB migration does for existing
       ;; Fields)
       (db/update-where! Field {:table_id (u/get-id venues-table)}, :database_type "?")
-      (db/update! Table (u/get-id venues-table) :fields_hash "something new")
       ;; now sync the DB again
       (let [{:keys [step-info task-history]} (sut/sync-database! "sync-fields" db)]
         [(sut/only-step-keys step-info)
@@ -54,7 +51,6 @@
   (tt/with-temp Database [db (select-keys (data/db) [:details :engine])]
     (let [{new-step-info :step-info, new-task-history :task-history} (sut/sync-database! "sync-fields" db)
           venues-table     (Table :db_id (u/get-id db), :display_name "Venues")]
-      (db/update! Table (u/get-id venues-table) :fields_hash "something new")
       ;; ok, now give all the Fields `:type/*` as their `base_type`
       (db/update-where! Field {:table_id (u/get-id venues-table)}, :base_type "type/*")
       ;; now sync the DB again

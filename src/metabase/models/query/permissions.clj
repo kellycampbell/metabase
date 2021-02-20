@@ -5,15 +5,13 @@
   (:require [clojure.tools.logging :as log]
             [metabase.api.common :as api]
             [metabase.mbql.util :as mbql.u]
-            [metabase.models
-             [interface :as i]
-             [permissions :as perms]
-             [table :refer [Table]]]
+            [metabase.models.interface :as i]
+            [metabase.models.permissions :as perms]
+            [metabase.models.table :refer [Table]]
             [metabase.query-processor.util :as qputil]
             [metabase.util :as u]
-            [metabase.util
-             [i18n :refer [tru]]
-             [schema :as su]]
+            [metabase.util.i18n :refer [tru]]
+            [metabase.util.schema :as su]
             [schema.core :as s]
             [toucan.db :as db]))
 
@@ -22,20 +20,23 @@
 ;; Is calculating permissions for queries complicated? Some would say so. Refer to this handy flow chart to see how
 ;; things get calculated.
 ;;
-;;                   perms-set
-;;                        |
-;;                        |
-;;                        |
-;;   native query? <------+-----> mbql query?
-;;         ↓                           ↓
-;; adhoc-native-query-path     mbql-perms-path-set
-;;                                      |
-;;                no source card <------+----> has source card
-;;                        ↓                          ↓
-;;          tables->permissions-path-set   source-card-read-perms
-;;                        ↓
-;;                 table-query-path
+;;                      perms-set
+;;                           |
+;;                           |
+;;                           |
+;;      native query? <------+-----> mbql query?
+;;            ↓                           ↓
+;;    adhoc-native-query-path     mbql-perms-path-set
+;;                                         |
+;;                   no source card <------+----> has source card
+;;                           ↓                          ↓
+;;             tables->permissions-path-set   source-card-read-perms
+;;                           ↓
+;;                    table-query-path
 ;;
+;; `segmented-perms-set` follows the same graph as above, but instead of `table-query-path`, it returns
+;; `table-segmented-query-path`. `perms-set` will require full access to the tables, `segmented-perms-set` will only
+;; require segmented access
 
 (s/defn ^:private query->source-table-ids :- #{(s/cond-pre (s/eq ::native) su/IntGreaterThanZero)}
   "Return a sequence of all Table IDs referenced by `query`."
@@ -123,11 +124,10 @@
     ;; if for some reason we can't expand the Card (i.e. it's an invalid legacy card) just return a set of permissions
     ;; that means no one will ever get to see it (except for superusers who get to see everything)
     (catch Throwable e
-      (when throw-exceptions?
-        (throw e))
-      (log/error (tru "Error calculating permissions for query: {0}" (.getMessage e))
-                 "\n"
-                 (u/pprint-to-str (u/filtered-stacktrace e)))
+      (let [e (ex-info "Error calculating permissions for query" {:query query} e)]
+        (when throw-exceptions?
+          (throw e))
+        (log/error e))
       #{"/db/0/"})))                    ; DB 0 will never exist
 
 (s/defn ^:private perms-set* :- #{perms/ObjectPath}
@@ -139,6 +139,12 @@
     (= (keyword query-type) :native) #{(perms/adhoc-native-query-path database)}
     (= (keyword query-type) :query)  (mbql-permissions-path-set query perms-opts)
     :else                            (throw (Exception. (tru "Invalid query type: {0}" query-type)))))
+
+(defn segmented-perms-set
+  "Calculate the set of permissions including segmented (not full) table permissions."
+  {:arglists '([query & {:keys [throw-exceptions? already-preprocessed?]}])}
+  [query & {:as perms-opts}]
+  (perms-set* query (assoc perms-opts :segmented-perms? true)))
 
 (defn perms-set
   "Calculate the set of permissions required to run an ad-hoc `query`. Returns permissions for full table access (not
@@ -152,4 +158,5 @@
   permissions and segmented table permissions"
   [query]
   (let [user-perms @api/*current-user-permissions-set*]
-    (perms/set-has-full-permissions-for-set? user-perms (perms-set query))))
+    (or (perms/set-has-full-permissions-for-set? user-perms (perms-set query))
+        (perms/set-has-full-permissions-for-set? user-perms (segmented-perms-set query)))))

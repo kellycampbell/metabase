@@ -15,6 +15,7 @@ export type ColorFamily = { [name: ColorName]: ColorString };
 /* eslint-disable no-color-literals */
 const colors = {
   brand: "#509EE3",
+  "brand-light": "#DDECFA",
   accent1: "#88BF4D",
   accent2: "#A989C5",
   accent3: "#EF8C8C",
@@ -28,15 +29,16 @@ const colors = {
   success: "#84BB4C",
   error: "#ED6E6E",
   warning: "#F9CF48",
-  "text-dark": "#2E353B",
-  "text-medium": "#74838f",
-  "text-light": "#C7CFD4",
+  "text-dark": "#4C5773",
+  "text-medium": "#949AAB",
+  "text-light": "#B8BBC3",
   "text-white": "#FFFFFF",
   "bg-black": "#2E353B",
   "bg-dark": "#93A1AB",
   "bg-medium": "#EDF2F5",
   "bg-light": "#F9FBFC",
   "bg-white": "#FFFFFF",
+  "bg-yellow": "#FFFCF2",
   shadow: "rgba(0,0,0,0.08)",
   border: "#F0F0F0",
   /* Saturated colors for the SQL editor. Shouldn't be used elsewhere since they're not white-labelable. */
@@ -55,6 +57,7 @@ export const aliases = {
   database: "accent2",
   dashboard: "brand",
   pulse: "accent4",
+  nav: "brand",
 };
 
 export const harmony = [];
@@ -117,7 +120,7 @@ function syncDeprecatedColorFamilies() {
   normal.orange = colors["accent5"];
   normal.teal = colors["accent6"];
   normal.indigo = colors["accent7"];
-  normal.gray = colors["text-medium"];
+  normal.gray = colors["text-dark"];
   normal.grey1 = colors["text-light"];
   normal.grey2 = colors["text-medium"];
   normal.grey3 = colors["text-dark"];
@@ -232,7 +235,7 @@ const PREFERRED_COLORS = {
 
 const PREFERRED_COLORS_MAP = {};
 for (const color in PREFERRED_COLORS) {
-  if (PREFERRED_COLORS.hasOwnProperty(color)) {
+  if (Object.prototype.hasOwnProperty.call(PREFERRED_COLORS, color)) {
     const keys = PREFERRED_COLORS[color];
     for (let i = 0; i < keys.length; i++) {
       PREFERRED_COLORS_MAP[keys[i]] = color;

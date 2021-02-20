@@ -15,10 +15,9 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [clojurewerkz.quartzite.scheduler :as qs]
-            [metabase
-             [db :as mdb]
-             [util :as u]]
+            [metabase.db :as mdb]
             [metabase.plugins.classloader :as classloader]
+            [metabase.util :as u]
             [metabase.util.i18n :refer [trs]]
             [schema.core :as s]
             [toucan.db :as db])
@@ -27,6 +26,10 @@
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                               SCHEDULER INSTANCE                                               |
 ;;; +----------------------------------------------------------------------------------------------------------------+
+
+(def ^:dynamic *quartz-scheduler*
+  "Override the global Quartz scheduler by binding this var."
+  nil)
 
 (defonce ^:private quartz-scheduler
   (atom nil))
@@ -37,7 +40,8 @@
   are a few places (e.g., in tests) where we swap the instance out."
   ;; TODO - why can't we just swap the atom out in the tests?
   ^Scheduler []
-  @quartz-scheduler)
+  (or *quartz-scheduler*
+      @quartz-scheduler))
 
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -61,7 +65,7 @@
 (defn- find-and-load-task-namespaces!
   "Search Classpath for namespaces that start with `metabase.tasks.`, then `require` them so initialization can happen."
   []
-  (doseq [ns-symb @u/metabase-namespace-symbols
+  (doseq [ns-symb u/metabase-namespace-symbols
           :when   (.startsWith (name ns-symb) "metabase.task.")]
     (try
       (log/debug (trs "Loading tasks namespace:") (u/format-color 'blue ns-symb))
@@ -93,7 +97,15 @@
   (getConnection [_]
     ;; get a connection from our application DB connection pool. Quartz will close it (i.e., return it to the pool)
     ;; when it's done
-    (jdbc/get-connection (db/connection)))
+    ;;
+    ;; very important! Fetch a new connection from the connection pool rather than using currently bound Connection if
+    ;; one already exists -- because Quartz will close this connection when done, we don't want to screw up the
+    ;; calling block
+    ;;
+    ;; in a perfect world we could just check whether we're creating a new Connection or not, and if using an existing
+    ;; Connection, wrap it in a delegating proxy wrapper that makes `.close()` a no-op but forwards all other methods.
+    ;; Now that would be a useful macro!
+    (some-> @@#'db/default-db-connection jdbc/get-connection))
   (shutdown [_]))
 
 (when-not *compile-files*
@@ -208,12 +220,12 @@
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
 (defn- job-detail->info [^JobDetail job-detail]
-  {:key                                (-> (.getKey job-detail) .getName)
-   :class                              (-> (.getJobClass job-detail) .getCanonicalName)
-   :description                        (.getDescription job-detail)
-   :concurrent-executation-disallowed? (.isConcurrentExectionDisallowed job-detail)
-   :durable?                           (.isDurable job-detail)
-   :requests-recovery?                 (.requestsRecovery job-detail)})
+  {:key                              (-> (.getKey job-detail) .getName)
+   :class                            (-> (.getJobClass job-detail) .getCanonicalName)
+   :description                      (.getDescription job-detail)
+   :concurrent-execution-disallowed? (.isConcurrentExectionDisallowed job-detail)
+   :durable?                         (.isDurable job-detail)
+   :requests-recovery?               (.requestsRecovery job-detail)})
 
 (defmulti ^:private trigger->info
   {:arglists '([trigger])}
@@ -230,32 +242,53 @@
    :previous-fire-time (.getPreviousFireTime trigger)
    :priority           (.getPriority trigger)
    :start-time         (.getStartTime trigger)
-   :may-fire-again?    (.mayFireAgain trigger)})
+   :may-fire-again?    (.mayFireAgain trigger)
+   :data               (.getJobDataMap trigger)})
 
 (defmethod trigger->info CronTrigger
   [^CronTrigger trigger]
-  (merge
+  (assoc
    ((get-method trigger->info Trigger) trigger)
-   {:misfire-instruction
-    ;; not 100% sure why `case` doesn't work here...
-    (condp = (.getMisfireInstruction trigger)
-      CronTrigger/MISFIRE_INSTRUCTION_IGNORE_MISFIRE_POLICY "IGNORE_MISFIRE_POLICY"
-      CronTrigger/MISFIRE_INSTRUCTION_SMART_POLICY          "SMART_POLICY"
-      CronTrigger/MISFIRE_INSTRUCTION_FIRE_ONCE_NOW         "FIRE_ONCE_NOW"
-      CronTrigger/MISFIRE_INSTRUCTION_DO_NOTHING            "DO_NOTHING"
-      (format "UNKNOWN: %d" (.getMisfireInstruction trigger)))}))
+   :schedule
+   (.getCronExpression trigger)
+
+   :misfire-instruction
+   ;; not 100% sure why `case` doesn't work here...
+   (condp = (.getMisfireInstruction trigger)
+     CronTrigger/MISFIRE_INSTRUCTION_IGNORE_MISFIRE_POLICY "IGNORE_MISFIRE_POLICY"
+     CronTrigger/MISFIRE_INSTRUCTION_SMART_POLICY          "SMART_POLICY"
+     CronTrigger/MISFIRE_INSTRUCTION_FIRE_ONCE_NOW         "FIRE_ONCE_NOW"
+     CronTrigger/MISFIRE_INSTRUCTION_DO_NOTHING            "DO_NOTHING"
+     (format "UNKNOWN: %d" (.getMisfireInstruction trigger)))))
+
+(defn- ->job-key ^JobKey [x]
+  (cond
+    (instance? JobKey x) x
+    (string? x)          (JobKey. ^String x)))
+
+(defn job-info
+  "Get info about a specific Job (`job-key` can be either a String or `JobKey`).
+
+    (task/job-info \"metabase.task.sync-and-analyze.job\")"
+  [job-key]
+  (let [job-key (->job-key job-key)]
+    (try
+      (assoc (job-detail->info (qs/get-job (scheduler) job-key))
+             :triggers (for [trigger (sort-by #(-> ^Trigger % .getKey .getName)
+                                              (qs/get-triggers-of-job (scheduler) job-key))]
+                         (trigger->info trigger)))
+      (catch Throwable e
+        (log/warn e (trs "Error fetching details for Job: {0}" (.getName job-key)))))))
+
+(defn- jobs-info []
+  (->> (some-> (scheduler) (.getJobKeys nil))
+       (sort-by #(.getName ^JobKey %))
+       (map job-info)
+       (filter some?)))
 
 (defn scheduler-info
   "Return raw data about all the scheduler and scheduled tasks (i.e. Jobs and Triggers). Primarily for debugging
   purposes."
   []
-  {:scheduler
-   (str/split-lines (.getSummary (.getMetaData (scheduler))))
-
-   :jobs
-   (for [^JobKey job-key (->> (.getJobKeys (scheduler) nil)
-                              (sort-by #(.getName ^JobKey %) ))]
-     (assoc (job-detail->info (qs/get-job (scheduler) job-key))
-       :triggers (for [trigger (->> (qs/get-triggers-of-job (scheduler) job-key)
-                                    (sort-by #(-> ^Trigger % .getKey .getName)))]
-                   (trigger->info trigger))))})
+  {:scheduler (some-> (scheduler) .getMetaData .getSummary str/split-lines)
+   :jobs      (jobs-info)})

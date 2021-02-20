@@ -26,19 +26,19 @@ export const databaseToForeignKeys = database =>
         // ignore tables without primary key
         .filter(
           table =>
-            table && table.fields.find(field => isPK(field.special_type)),
+            table && table.fields.find(field => isPK(field.semantic_type)),
         )
         .map(table => ({
           table: table,
-          field: table && table.fields.find(field => isPK(field.special_type)),
+          field: table && table.fields.find(field => isPK(field.semantic_type)),
         }))
         .map(({ table, field }) => ({
           id: field.id,
           name:
-            table.schema && table.schema !== "public"
-              ? `${titleize(humanize(table.schema))}.${table.display_name} → ${
-                  field.display_name
-                }`
+            table.schema_name && table.schema_name !== "public"
+              ? `${titleize(humanize(table.schema_name))}.${
+                  table.display_name
+                } → ${field.display_name}`
               : `${table.display_name} → ${field.display_name}`,
           description: field.description,
         }))
@@ -49,7 +49,7 @@ export const fieldsToFormFields = fields =>
   Object.keys(fields)
     .map(key => [
       `${key}.display_name`,
-      `${key}.special_type`,
+      `${key}.semantic_type`,
       `${key}.fk_target_field_id`,
     ])
     .reduce((array, keys) => array.concat(keys), []);
@@ -75,8 +75,8 @@ export const getQuestion = ({
     )
     .updateIn(["display"], display => visualization || display)
     .updateIn(["dataset_query", "query", "breakout"], oldBreakout => {
-      if (fieldId && metadata && metadata.fields[fieldId]) {
-        return [metadata.fields[fieldId].getDefaultBreakout()];
+      if (fieldId && metadata && metadata.field(fieldId)) {
+        return [metadata.field(fieldId).getDefaultBreakout()];
       }
       if (fieldId) {
         return [["field-id", fieldId]];

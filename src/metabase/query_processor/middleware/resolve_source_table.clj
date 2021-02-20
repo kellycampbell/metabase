@@ -2,9 +2,8 @@
   "Fetches Tables corresponding to any `:source-table` IDs anywhere in the query."
   (:require [metabase.mbql.util :as mbql.u]
             [metabase.query-processor.store :as qp.store]
-            [metabase.util
-             [i18n :refer [tru]]
-             [schema :as su]]
+            [metabase.util.i18n :refer [tru]]
+            [metabase.util.schema :as su]
             [schema.core :as s]))
 
 (defn- check-all-source-table-ids-are-valid
@@ -31,7 +30,7 @@
    flatten
    set))
 
-(defn- resolve-source-tables*
+(defn resolve-source-tables*
   "Resolve all Tables referenced in the `query`, and store them in the QP Store."
   [query]
   (check-all-source-table-ids-are-valid query)
@@ -41,6 +40,6 @@
   "Middleware that will take any `:source-table`s (integer IDs) anywhere in the query and fetch and save the
   corresponding Table in the Query Processor Store."
   [qp]
-  (fn [query]
+  (fn [query rff context]
     (resolve-source-tables* query)
-    (qp query)))
+    (qp query rff context)))

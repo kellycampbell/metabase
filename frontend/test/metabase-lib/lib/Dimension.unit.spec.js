@@ -1,5 +1,11 @@
 import Dimension, { FKDimension } from "metabase-lib/lib/Dimension";
-import { metadata, ORDERS, PRODUCTS } from "__support__/sample_dataset_fixture";
+import StructuredQuery from "metabase-lib/lib/queries/StructuredQuery";
+import {
+  metadata,
+  ORDERS,
+  PRODUCTS,
+  SAMPLE_DATASET,
+} from "__support__/sample_dataset_fixture";
 
 describe("Dimension", () => {
   describe("STATIC METHODS", () => {
@@ -195,7 +201,7 @@ describe("Dimension", () => {
           name: "TOTAL",
           display_name: "Total",
           base_type: "type/Float",
-          special_type: null,
+          semantic_type: "type/Currency",
           field_ref: ["field-id", ORDERS.TOTAL.id],
         });
       });
@@ -217,7 +223,7 @@ describe("Dimension", () => {
         it("should return array of FK dimensions for foreign key field dimension", () => {
           pending();
           // Something like this:
-          // fieldsInProductsTable = metadata.tables[1].fields.length;
+          // fieldsInProductsTable = metadata.table(1).fields.length;
           // expect(FKDimension.dimensions(fkFieldIdDimension).length).toEqual(fieldsInProductsTable);
         });
         it("should return empty array for non-FK field dimension", () => {
@@ -257,7 +263,7 @@ describe("Dimension", () => {
           name: "TITLE",
           display_name: "Title",
           base_type: "type/Text",
-          special_type: "type/Category",
+          semantic_type: "type/Category",
           fk_field_id: ORDERS.PRODUCT_ID.id,
           field_ref: [
             "fk->",
@@ -280,7 +286,7 @@ describe("Dimension", () => {
         it("should return an array with dimensions for each datetime unit", () => {
           pending();
           // Something like this:
-          // fieldsInProductsTable = metadata.tables[1].fields.length;
+          // fieldsInProductsTable = metadata.table(1).fields.length;
           // expect(FKDimension.dimensions(fkFieldIdDimension).length).toEqual(fieldsInProductsTable);
         });
         it("should return empty array for non-date field dimension", () => {
@@ -329,7 +335,7 @@ describe("Dimension", () => {
           name: "CREATED_AT",
           display_name: "Created At",
           base_type: "type/DateTime",
-          special_type: null,
+          semantic_type: null,
           field_ref: [
             "datetime-field",
             ["field-id", ORDERS.CREATED_AT.id],
@@ -392,7 +398,7 @@ describe("Dimension", () => {
           name: "TOTAL",
           display_name: "Total",
           base_type: "type/Float",
-          special_type: null,
+          semantic_type: "type/Currency",
           field_ref: [
             "binning-strategy",
             ["field-id", ORDERS.TOTAL.id],
@@ -415,7 +421,7 @@ describe("Dimension", () => {
         it("should return array of FK dimensions for foreign key field dimension", () => {
           pending();
           // Something like this:
-          // fieldsInProductsTable = metadata.tables[1].fields.length;
+          // fieldsInProductsTable = metadata.table(1).fields.length;
           // expect(FKDimension.dimensions(fkFieldIdDimension).length).toEqual(fieldsInProductsTable);
         });
         it("should return empty array for non-FK field dimension", () => {
@@ -442,7 +448,7 @@ describe("Dimension", () => {
           name: "Hello World",
           display_name: "Hello World",
           base_type: "type/Float",
-          special_type: null,
+          semantic_type: null,
           field_ref: ["expression", "Hello World"],
         });
       });
@@ -486,7 +492,7 @@ describe("Dimension", () => {
           name: "TOTAL",
           display_name: "Total",
           base_type: "type/Float",
-          special_type: null,
+          semantic_type: "type/Currency",
           field_ref: ["joined-field", "join1", ["field-id", ORDERS.TOTAL.id]],
         });
       });
@@ -500,6 +506,59 @@ describe("Dimension", () => {
       describe("mbql()", () => {
         it('returns an "aggregation" clause', () => {
           expect(dimension.mbql()).toEqual(["aggregation", 1]);
+        });
+      });
+
+      function aggregation(agg) {
+        const query = new StructuredQuery(ORDERS.question(), {
+          type: "query",
+          database: SAMPLE_DATASET.id,
+          query: {
+            "source-table": ORDERS.id,
+            aggregation: [agg],
+          },
+        });
+        return Dimension.parseMBQL(["aggregation", 0], metadata, query);
+      }
+
+      describe("column()", () => {
+        function sumOf(column) {
+          return aggregation(["sum", ["field-id", column.id]]);
+        }
+
+        it("should clear unaggregated semantic types", () => {
+          const { semantic_type } = sumOf(ORDERS.PRODUCT_ID).column();
+
+          expect(semantic_type).toBe(undefined);
+        });
+
+        it("should retain aggregated semantic types", () => {
+          const { semantic_type } = sumOf(ORDERS.TOTAL).column();
+
+          expect(semantic_type).toBe("type/Currency");
+        });
+      });
+
+      describe("field()", () => {
+        it("should return a float field for sum of order total", () => {
+          const { base_type } = aggregation([
+            "sum",
+            ["field-id", ORDERS.TOTAL.id],
+          ]).field();
+          expect(base_type).toBe("type/Float");
+        });
+
+        it("should return an int field for count distinct of product category", () => {
+          const { base_type } = aggregation([
+            "distinct",
+            ["field-id", PRODUCTS.CATEGORY.id],
+          ]).field();
+          expect(base_type).toBe("type/Integer");
+        });
+
+        it("should return an int field for count", () => {
+          const { base_type } = aggregation(["count"]).field();
+          expect(base_type).toBe("type/Integer");
         });
       });
     });

@@ -1,24 +1,20 @@
 (ns metabase.api.metric-test
   "Tests for /api/metric endpoints."
   (:require [expectations :refer [expect]]
-            [metabase
-             [http-client :as http]
-             [util :as u]]
-            [metabase.middleware.util :as middleware.u]
-            [metabase.models
-             [database :refer [Database]]
-             [metric :as metric :refer [Metric]]
-             [permissions :as perms]
-             [permissions-group :as group]
-             [revision :refer [Revision]]
-             [table :refer [Table]]]
-            [metabase.test
-             [data :as data :refer :all]
-             [util :as tu]]
+            [metabase.http-client :as http]
+            [metabase.models.database :refer [Database]]
+            [metabase.models.metric :as metric :refer [Metric]]
+            [metabase.models.permissions :as perms]
+            [metabase.models.permissions-group :as group]
+            [metabase.models.revision :refer [Revision]]
+            [metabase.models.table :refer [Table]]
+            [metabase.server.middleware.util :as middleware.u]
+            [metabase.test.data :as data :refer :all]
             [metabase.test.data.users :refer [fetch-user user->client user->id]]
-            [toucan
-             [db :as db]
-             [hydrate :refer [hydrate]]]
+            [metabase.test.util :as tu]
+            [metabase.util :as u]
+            [toucan.db :as db]
+            [toucan.hydrate :refer [hydrate]]
             [toucan.util.test :as tt]))
 
 ;; ## Helper Fns
@@ -35,7 +31,9 @@
    :definition              nil})
 
 (defn- user-details [user]
-  (select-keys user [:id :email :date_joined :first_name :last_name :last_login :is_superuser :is_qbnewb :common_name]))
+  (select-keys
+   user
+   [:id :email :date_joined :first_name :last_name :last_login :is_superuser :is_qbnewb :common_name :locale]))
 
 (defn- metric-response [{:keys [created_at updated_at], :as metric}]
   (-> (into {} metric)
@@ -199,13 +197,14 @@
     :creator_id  (user->id :rasta)
     :creator     (user-details (fetch-user :rasta))
     :archived    true})
-  (tt/with-temp* [Database [{database-id :id}]
-                  Table    [{table-id :id} {:db_id database-id}]
-                  Metric   [{:keys [id]}   {:table_id table-id}]]
-    ((user->client :crowberto) :delete 204 (format "metric/%d" id) :revision_message "carryon")
-    ;; should still be able to fetch the archived Metric
-    (metric-response
-     ((user->client :crowberto) :get 200 (format "metric/%d" id)))))
+  (-> (tt/with-temp* [Database [{database-id :id}]
+                      Table    [{table-id :id} {:db_id database-id}]
+                      Metric   [{:keys [id]}   {:table_id table-id}]]
+        ((user->client :crowberto) :delete 204 (format "metric/%d" id) :revision_message "carryon")
+        ;; should still be able to fetch the archived Metric
+        (metric-response
+         ((user->client :crowberto) :get 200 (format "metric/%d" id))))
+      (dissoc :query_description)))
 
 
 ;; ## GET /api/metric/:id
@@ -227,11 +226,12 @@
     :description "Lookin' for a blueberry"
     :creator_id  (user->id :crowberto)
     :creator     (user-details (fetch-user :crowberto))})
-  (tt/with-temp* [Database [{database-id :id}]
-                  Table    [{table-id :id} {:db_id database-id}]
-                  Metric   [{:keys [id]}   {:creator_id  (user->id :crowberto)
-                                            :table_id    table-id}]]
-    (metric-response ((user->client :rasta) :get 200 (format "metric/%d" id)))))
+  (-> (tt/with-temp* [Database [{database-id :id}]
+                      Table    [{table-id :id} {:db_id database-id}]
+                      Metric   [{:keys [id]}   {:creator_id  (user->id :crowberto)
+                                                :table_id    table-id}]]
+        (metric-response ((user->client :rasta) :get 200 (format "metric/%d" id))))
+      (dissoc :query_description)))
 
 
 ;; ## GET /api/metric/:id/revisions
@@ -400,6 +400,10 @@
   (tu/mappify (hydrate [(assoc metric-1 :database_id (data/id))
                         (assoc metric-2 :database_id (data/id))]
                        :creator))
+  (map #(dissoc % :query_description) ((user->client :rasta) :get 200 "metric/")))
+
+(expect
+  []
   ((user->client :rasta) :get 200 "metric/"))
 
 ;; Test related/recommended entities

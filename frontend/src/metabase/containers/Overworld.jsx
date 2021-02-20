@@ -11,13 +11,14 @@ import ExplorePane from "metabase/components/ExplorePane";
 import Tooltip from "metabase/components/Tooltip";
 import MetabotLogo from "metabase/components/MetabotLogo";
 import CollectionList from "metabase/components/CollectionList";
+import ModalWithTrigger from "metabase/components/ModalWithTrigger";
+import Button from "metabase/components/Button";
 
 import Card from "metabase/components/Card";
 import { Grid, GridItem } from "metabase/components/Grid";
 import Icon from "metabase/components/Icon";
 import Link from "metabase/components/Link";
-import Subhead from "metabase/components/Subhead";
-import RetinaImage from "react-retina-image";
+import Subhead from "metabase/components/type/Subhead";
 
 import * as Urls from "metabase/lib/urls";
 import { color } from "metabase/lib/colors";
@@ -27,8 +28,13 @@ import Database from "metabase/entities/databases";
 import Search from "metabase/entities/search";
 import { ROOT_COLLECTION } from "metabase/entities/collections";
 
+import { updateSetting } from "metabase/admin/settings/settings";
+
 import { getUser } from "metabase/home/selectors";
-import { getXraysEnabled } from "metabase/selectors/settings";
+import {
+  getShowHomepageData,
+  getShowHomepageXrays,
+} from "metabase/selectors/settings";
 
 const PAGE_PADDING = [1, 2, 4];
 
@@ -55,20 +61,36 @@ const getParitionedCollections = createSelector(
   },
 );
 
+const getGreeting = createSelector(
+  [getUser],
+  user => Greeting.sayHello(user.first_name),
+);
+
 //class Overworld extends Zelda
 @Search.loadList({
   query: { collection: "root" },
   wrapped: true,
 })
-@connect((state, props) => ({
-  // split out collections, pinned, and unpinned since bulk actions only apply to unpinned
-  ...getParitionedCollections(state, props),
-  user: getUser(state, props),
-  xraysEnabled: getXraysEnabled(state),
-}))
+@connect(
+  (state, props) => ({
+    // split out collections, pinned, and unpinned since bulk actions only apply to unpinned
+    ...getParitionedCollections(state, props),
+    user: getUser(state, props),
+    showHomepageData: getShowHomepageData(state),
+    showHomepageXrays: getShowHomepageXrays(state),
+    greeting: getGreeting(state, props),
+  }),
+  { updateSetting },
+)
 class Overworld extends React.Component {
   render() {
-    const { user, xraysEnabled } = this.props;
+    const {
+      greeting,
+      user,
+      showHomepageData,
+      showHomepageXrays,
+      updateSetting,
+    } = this.props;
     return (
       <Box>
         <Flex px={PAGE_PADDING} pt={3} pb={1} align="center">
@@ -76,7 +98,7 @@ class Overworld extends React.Component {
             <MetabotLogo />
           </Tooltip>
           <Box ml={2}>
-            <Subhead>{Greeting.sayHello(user.first_name)}</Subhead>
+            <Subhead>{greeting}</Subhead>
           </Box>
         </Flex>
         <CollectionItemsLoader collectionId="root">
@@ -85,7 +107,7 @@ class Overworld extends React.Component {
               d => d.model === "dashboard" && d.collection_position != null,
             );
 
-            if (xraysEnabled && !pinnedDashboards.length > 0) {
+            if (showHomepageXrays && !pinnedDashboards.length > 0) {
               return (
                 <CandidateListLoader>
                   {({ candidates, sampleCandidates, isSample }) => {
@@ -96,12 +118,48 @@ class Overworld extends React.Component {
                     return (
                       <Box mx={PAGE_PADDING} mt={[1, 3]}>
                         {user.is_superuser && <AdminPinMessage />}
-                        <Box mt={[1, 3]}>
-                          <Flex align="center">
-                            <SectionHeading>
+                        <Box
+                          mt={[1, 3]}
+                          className="hover-parent hover--visibility"
+                        >
+                          <SectionHeading>
+                            <Flex align="center">
                               {t`Try these x-rays based on your data.`}
-                            </SectionHeading>
-                          </Flex>
+                              {user.is_superuser && (
+                                <ModalWithTrigger
+                                  triggerElement={
+                                    <Tooltip
+                                      tooltip={t`Remove these suggestions`}
+                                    >
+                                      <Icon
+                                        ml="2"
+                                        name="close"
+                                        className="hover-child text-brand-hover"
+                                      />
+                                    </Tooltip>
+                                  }
+                                  title={t`Remove these suggestions?`}
+                                  footer={
+                                    <Button
+                                      danger
+                                      onClick={onClose => {
+                                        updateSetting({
+                                          key: "show-homepage-xrays",
+                                          value: false,
+                                        });
+                                      }}
+                                    >
+                                      {t`Remove`}
+                                    </Button>
+                                  }
+                                >
+                                  <Box>
+                                    {t`These won’t show up on the homepage for any of your users anymore, but you can always get to x-rays by clicking on Browse Data in the main navigation, then clicking on the lightning bolt icon on one of your tables.`}
+                                  </Box>
+                                </ModalWithTrigger>
+                              )}
+                            </Flex>
+                          </SectionHeading>
                           <Box>
                             <ExplorePane
                               candidates={candidates}
@@ -158,7 +216,6 @@ class Overworld extends React.Component {
             );
           }}
         </CollectionItemsLoader>
-
         <Box px={PAGE_PADDING} my={3}>
           <SectionHeading>{ROOT_COLLECTION.name}</SectionHeading>
           <Box p={[1, 2]} mt={2} bg={color("bg-medium")}>
@@ -173,8 +230,12 @@ class Overworld extends React.Component {
             ) : (
               <Box className="text-centered">
                 <Box style={{ opacity: 0.5 }}>
-                  <RetinaImage
+                  <img
                     src="app/img/empty.png"
+                    srcSet="
+                      app/img/empty.png 1x,
+                      app/img/empty@2x.png 2x
+                    "
                     className="block ml-auto mr-auto"
                   />
                 </Box>
@@ -202,64 +263,104 @@ class Overworld extends React.Component {
             </Link>
           </Box>
         </Box>
-
-        <Database.ListLoader>
-          {({ databases }) => {
-            if (databases.length === 0) {
-              return null;
-            }
-            return (
-              <Box pt={2} px={PAGE_PADDING}>
-                <SectionHeading>{t`Our data`}</SectionHeading>
-                <Box mb={4}>
-                  <Grid>
-                    {databases.map(database => (
-                      <GridItem w={[1, 1 / 3]} key={database.id}>
-                        <Link
-                          to={`browse/${database.id}`}
-                          hover={{ color: color("brand") }}
-                          data-metabase-event={`Homepage;Browse DB Clicked; DB Type ${database.engine}`}
+        {showHomepageData && (
+          <Database.ListLoader>
+            {({ databases }) => {
+              if (databases.length === 0) {
+                return null;
+              }
+              return (
+                <Box
+                  pt={2}
+                  px={PAGE_PADDING}
+                  className="hover-parent hover--visibility"
+                >
+                  <SectionHeading>
+                    <Flex align="center">
+                      {t`Our data`}
+                      {user.is_superuser && (
+                        <ModalWithTrigger
+                          triggerElement={
+                            <Tooltip tooltip={t`Hide this section`}>
+                              <Icon
+                                ml="4"
+                                name="close"
+                                className="block hover-child text-brand-hover"
+                              />
+                            </Tooltip>
+                          }
+                          title={t`Remove this section?`}
+                          footer={
+                            <Button
+                              danger
+                              onClick={onClose => {
+                                updateSetting({
+                                  key: "show-homepage-data",
+                                  value: false,
+                                });
+                              }}
+                            >
+                              {t`Remove`}
+                            </Button>
+                          }
                         >
-                          <Box
-                            p={3}
-                            bg={color("bg-medium")}
-                            className="hover-parent hover--visibility"
-                          >
-                            <Icon
-                              name="database"
-                              color={color("database")}
-                              mb={3}
-                              size={28}
-                            />
-                            <Flex align="center">
-                              <h3 className="text-wrap">{database.name}</h3>
-                              <Box ml="auto" mr={1} className="hover-child">
-                                <Flex align="center">
-                                  <Tooltip
-                                    tooltip={t`Learn about this database`}
-                                  >
-                                    <Link
-                                      to={`reference/databases/${database.id}`}
-                                    >
-                                      <Icon
-                                        name="reference"
-                                        color={color("text-light")}
-                                      />
-                                    </Link>
-                                  </Tooltip>
-                                </Flex>
-                              </Box>
-                            </Flex>
+                          <Box>
+                            {t`"Our Data" won’t show up on the homepage for any of your users anymore, but you can always browse through your databases and tables by clicking Browse Data in the main navigation.`}
                           </Box>
-                        </Link>
-                      </GridItem>
-                    ))}
-                  </Grid>
+                        </ModalWithTrigger>
+                      )}
+                    </Flex>
+                  </SectionHeading>
+                  <Box mb={4}>
+                    <Grid>
+                      {databases.map(database => (
+                        <GridItem w={[1, 1 / 3]} key={database.id}>
+                          <Link
+                            to={`browse/${database.id}`}
+                            hover={{ color: color("brand") }}
+                            data-metabase-event={`Homepage;Browse DB Clicked; DB Type ${database.engine}`}
+                          >
+                            <Box
+                              p={3}
+                              bg={color("bg-medium")}
+                              className="hover-parent hover--visibility"
+                            >
+                              <Icon
+                                name="database"
+                                color={color("database")}
+                                mb={3}
+                                size={28}
+                              />
+                              <Flex align="center">
+                                <h3 className="text-wrap">{database.name}</h3>
+                                <Box ml="auto" mr={1} className="hover-child">
+                                  <Flex align="center">
+                                    <Tooltip
+                                      tooltip={t`Learn about this database`}
+                                    >
+                                      <Link
+                                        to={`reference/databases/${database.id}`}
+                                      >
+                                        <Icon
+                                          name="reference"
+                                          color={color("text-light")}
+                                        />
+                                      </Link>
+                                    </Tooltip>
+                                  </Flex>
+                                </Box>
+                              </Flex>
+                            </Box>
+                          </Link>
+                        </GridItem>
+                      ))}
+                    </Grid>
+                  </Box>
                 </Box>
-              </Box>
-            );
-          }}
-        </Database.ListLoader>
+              );
+            }}
+          </Database.ListLoader>
+        )}
       </Box>
     );
   }

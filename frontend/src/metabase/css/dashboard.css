@@ -55,9 +55,8 @@
   color: var(--color-text-white);
 }
 
-.Dashboard.Dashboard--night .Header-button,
-.Dashboard.Dashboard--night .Header-button svg {
-  color: color(var(--color-text-medium) alpha(-70%));
+.Dashboard.Dashboard--night .Header-button {
+  color: var(--color-text-medium);
 }
 
 .Dashboard.Dashboard--fullscreen .fullscreen-normal-text {
@@ -82,6 +81,25 @@
 .Dashboard.Dashboard--night .enable-dots-onhover .dc-tooltip circle.dot:hover,
 .Dashboard.Dashboard--night .enable-dots .dc-tooltip circle.dot {
   fill: currentColor;
+}
+
+.Dashboard.Dashboard--night .bg-light {
+  background-color: var(--color-bg-black);
+}
+
+.Dashboard.Dashboard--night .bg-medium {
+  background-color: #596269;
+}
+
+.Dashboard.Dashboard--night .text-dark {
+  color: var(--color-bg-light);
+}
+
+.Dashboard.Dashboard--night .border-top,
+.Dashboard.Dashboard--night .border-left,
+.Dashboard.Dashboard--night .border-bottom,
+.Dashboard.Dashboard--night .border-right {
+  border-color: var(--color-bg-dark);
 }
 
 /* Night mode transition */
@@ -117,23 +135,6 @@
 .Dash--editing .DashCard .Card {
   pointer-events: none;
   transition: border 0.3s, background-color 0.3s;
-}
-.Dash--editing.Dash--editingParameter .DashCard .Card {
-  pointer-events: auto;
-}
-
-@keyframes fade-out-yellow {
-  from {
-    background-color: var(--color-bg-white);
-  }
-  to {
-    background-color: var(--color-bg-white);
-  }
-}
-
-.Dash--editing .DashCard .Card.Card--recent {
-  animation-duration: 30s;
-  animation-name: fade-out-yellow;
 }
 
 .Dash--editing .DashCard:hover .Card .Card-heading {
@@ -171,6 +172,8 @@
 
 .DashCard .Card {
   box-shadow: 0px 1px 3px var(--color-shadow);
+  border-color: transparent;
+  border-radius: 8px;
 }
 
 .Dash--editing .DashCard.dragging .Card {
@@ -364,6 +367,17 @@
 /* when in night mode code snippets should have a more readable background-color */
 .Dashboard--night pre code {
   background-color: color(var(--color-bg-white) alpha(-86%));
+}
+
+.Dashboard--night text.value-label-outline {
+  stroke: var(--night-mode-card);
+}
+
+.Dashboard text.value-label,
+.Dashboard text.value-label-outline,
+.Dashboard text.value-label-white,
+.Dashboard .LineAreaBarChart .dc-chart .axis text {
+  font-size: 12px;
 }
 
 .ScalarValue {

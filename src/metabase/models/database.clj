@@ -1,21 +1,19 @@
 (ns metabase.models.database
   (:require [cheshire.generate :refer [add-encoder encode-map]]
             [clojure.tools.logging :as log]
-            [metabase
-             [db :as mdb]
-             [driver :as driver]
-             [util :as u]]
+            [medley.core :as m]
             [metabase.api.common :refer [*current-user*]]
+            [metabase.db.util :as mdb.u]
+            [metabase.driver :as driver]
             [metabase.driver.util :as driver.u]
-            [metabase.models
-             [interface :as i]
-             [permissions :as perms]
-             [permissions-group :as perm-group]]
+            [metabase.models.interface :as i]
+            [metabase.models.permissions :as perms]
+            [metabase.models.permissions-group :as perm-group]
             [metabase.plugins.classloader :as classloader]
+            [metabase.util :as u]
             [metabase.util.i18n :refer [trs]]
-            [toucan
-             [db :as db]
-             [models :as models]]))
+            [toucan.db :as db]
+            [toucan.models :as models]))
 
 ;;; ----------------------------------------------- Entity & Lifecycle -----------------------------------------------
 
@@ -38,20 +36,10 @@
   "Unschedule any currently pending sync operation tasks for `database`."
   [database]
   (try
-    (classloader/the-classloader)
     (classloader/require 'metabase.task.sync-databases)
     ((resolve 'metabase.task.sync-databases/unschedule-tasks-for-db!) database)
     (catch Throwable e
       (log/error e (trs "Error unscheduling tasks for DB.")))))
-
-(defn- destroy-qp-thread-pool!
-  [database]
-  (try
-    (classloader/the-classloader)
-    (classloader/require 'metabase.query-processor.middleware.async-wait)
-    ((resolve 'metabase.query-processor.middleware.async-wait/destroy-thread-pool!) database)
-    (catch Throwable e
-      (log/error e (trs "Error destroying thread pool for DB.")))))
 
 (defn- post-insert [database]
   (u/prog1 database
@@ -67,11 +55,11 @@
 
 (defn- pre-delete [{id :id, driver :engine, :as database}]
   (unschedule-tasks! database)
-  (destroy-qp-thread-pool! database)
-  (db/delete! 'Card        :database_id id)
-  (db/delete! 'Permissions :object      [:like (str (perms/object-path id) "%")])
-  (db/delete! 'Table       :db_id       id)
-  (driver/notify-database-updated driver database))
+  (db/delete! 'Permissions :object [:like (str (perms/object-path id) "%")])
+  (try
+    (driver/notify-database-updated driver database)
+    (catch Throwable e
+      (log/error e (trs "Error sending database deletion notification")))))
 
 ;; TODO - this logic would make more sense in post-update if such a method existed
 (defn- pre-update
@@ -80,17 +68,21 @@
     ;; if the sync operation schedules have changed, we need to reschedule this DB
     (when (or new-metadata-schedule new-fieldvalues-schedule)
       (let [{old-metadata-schedule    :metadata_sync_schedule
-             old-fieldvalues-schedule :cache_field_values_schedule} (db/select-one [Database
-                                                                                    :metadata_sync_schedule
-                                                                                    :cache_field_values_schedule]
-                                                                      :id (u/get-id database))
+             old-fieldvalues-schedule :cache_field_values_schedule
+             existing-engine          :engine
+             existing-name            :name} (db/select-one [Database
+                                                             :metadata_sync_schedule
+                                                             :cache_field_values_schedule
+                                                             :engine
+                                                             :name]
+                                                            :id (u/the-id database))
             ;; if one of the schedules wasn't passed continue using the old one
-            new-metadata-schedule    (or new-metadata-schedule old-metadata-schedule)
-            new-fieldvalues-schedule (or new-fieldvalues-schedule old-fieldvalues-schedule)]
+            new-metadata-schedule            (or new-metadata-schedule old-metadata-schedule)
+            new-fieldvalues-schedule         (or new-fieldvalues-schedule old-fieldvalues-schedule)]
         (when-not (= [new-metadata-schedule new-fieldvalues-schedule]
                      [old-metadata-schedule old-fieldvalues-schedule])
           (log/info
-           (trs "{0} Database ''{1}'' sync/analyze schedules have changed!" (:engine database) (:name database))
+           (trs "{0} Database ''{1}'' sync/analyze schedules have changed!" existing-engine existing-name)
            "\n"
            (trs "Sync metadata was: ''{0}'' is now: ''{1}''" old-metadata-schedule new-metadata-schedule)
            "\n"
@@ -105,7 +97,6 @@
 (defn- perms-objects-set [database _]
   #{(perms/object-path (u/get-id database))})
 
-
 (u/strict-extend (class Database)
   models/IModel
   (merge models/IModelDefaults
@@ -114,7 +105,8 @@
                                        :options                     :json
                                        :engine                      :keyword
                                        :metadata_sync_schedule      :cron-string
-                                       :cache_field_values_schedule :cron-string})
+                                       :cache_field_values_schedule :cron-string
+                                       :start_of_week               :keyword})
           :properties     (constantly {:timestamped? true})
           :post-insert    post-insert
           :post-select    post-select
@@ -144,14 +136,14 @@
                         {:modifiers [:DISTINCT]}))))
 
 (defn pk-fields
-  "Return all the primary key `Fields` associated with this DATABASE."
+  "Return all the primary key `Fields` associated with this `database`."
   [{:keys [id]}]
   (let [table-ids (db/select-ids 'Table, :db_id id, :active true)]
     (when (seq table-ids)
-      (db/select 'Field, :table_id [:in table-ids], :special_type (mdb/isa :type/PK)))))
+      (db/select 'Field, :table_id [:in table-ids], :semantic_type (mdb.u/isa :type/PK)))))
 
 (defn schema-exists?
-  "Does DATABASE have any tables with SCHEMA?"
+  "Does `database` have any tables with `schema`?"
   ^Boolean [{:keys [id]}, schema]
   (db/exists? 'Table :db_id id, :schema (some-> schema name)))
 
@@ -162,15 +154,29 @@
   "The string to replace passwords with when serializing Databases."
   "**MetabasePass**")
 
+(defn sensitive-fields-for-db
+  "Gets all sensitive fields that should be redacted in API responses for a given database. Delegates to
+  driver.u/sensitive-fields using the given database's driver (if valid), so refer to that for full details. If a valid
+  driver can't be clearly determined, this simply returns the default set (driver.u/default-sensitive-fields)."
+  [database]
+  (if (and (some? database) (not-empty database))
+      (let [driver (driver.u/database->driver database)]
+        (if (some? driver)
+            (driver.u/sensitive-fields (driver.u/database->driver database))
+            driver.u/default-sensitive-fields))
+      driver.u/default-sensitive-fields))
+
 ;; when encoding a Database as JSON remove the `details` for any non-admin User. For admin users they can still see
-;; the `details` but remove the password. No one gets to see this in an API response!
+;; the `details` but remove anything resembling a password. No one gets to see this in an API response!
 (add-encoder
  DatabaseInstance
  (fn [db json-generator]
    (encode-map
-    (cond
-      (not (:is_superuser @*current-user*)) (dissoc db :details)
-      (get-in db [:details :password])      (assoc-in db [:details :password] protected-password)
-      (get-in db [:details :pass])          (assoc-in db [:details :pass] protected-password) ; MongoDB uses "pass" instead of password
-      :else                                 db)
+    (if (not (:is_superuser @*current-user*))
+      (dissoc db :details)
+      (update db :details (fn [details]
+                            (reduce
+                             #(m/update-existing %1 %2 (constantly protected-password))
+                             details
+                             (sensitive-fields-for-db db)))))
     json-generator)))

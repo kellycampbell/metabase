@@ -3,11 +3,11 @@
             [medley.core :as m]
             [metabase.api.common :as api]
             [metabase.models.permissions :as perms]
-            [metabase.transforms
-             [core :as transform]
-             [specs :as transform.specs]]))
+            [metabase.transforms.core :as transform]
+            [metabase.transforms.specs :as transform.specs]))
 
 (api/defendpoint GET "/:db-id/:schema/:transform-name"
+  "Look up a database schema transform"
   [db-id schema transform-name]
   (api/check-403 (perms/set-has-full-permissions? @api/*current-user-permissions-set*
                    (perms/object-path db-id schema)))

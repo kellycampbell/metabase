@@ -1,11 +1,12 @@
 import { isElementOfType } from "react-dom/test-utils";
-import moment from "moment";
+import moment from "moment-timezone";
 
 import {
   formatNumber,
   formatValue,
   formatUrl,
   formatDateTimeWithUnit,
+  slugify,
 } from "metabase/lib/formatting";
 import ExternalLink from "metabase/components/ExternalLink";
 import { TYPE } from "metabase/lib/types";
@@ -25,10 +26,30 @@ describe("formatting", () => {
       expect(formatNumber(-10)).toEqual("-10");
       expect(formatNumber(-99999999)).toEqual("-99,999,999");
     });
+    it("should format large numbers correctly with non-default number separator", () => {
+      const options = { number_separators: ",." };
+      expect(formatNumber(10.1, options)).toEqual("10,1");
+      expect(formatNumber(99999999.9, options)).toEqual("99.999.999,9");
+      expect(formatNumber(-10.1, options)).toEqual("-10,1");
+      expect(formatNumber(-99999999.9, options)).toEqual("-99.999.999,9");
+    });
     it("should format to 2 significant digits", () => {
       expect(formatNumber(1 / 3)).toEqual("0.33");
       expect(formatNumber(-1 / 3)).toEqual("-0.33");
       expect(formatNumber(0.0001 / 3)).toEqual("0.000033");
+    });
+    describe("in enclosing negative mode", () => {
+      it("should format -4 as (4)", () => {
+        expect(formatNumber(-4, { negativeInParentheses: true })).toEqual(
+          "(4)",
+        );
+      });
+      it("should format 7 as 7", () => {
+        expect(formatNumber(7, { negativeInParentheses: true })).toEqual("7");
+      });
+      it("should format 0 as 0", () => {
+        expect(formatNumber(0, { negativeInParentheses: true })).toEqual("0");
+      });
     });
     describe("in compact mode", () => {
       it("should format 0 as 0", () => {
@@ -37,14 +58,14 @@ describe("formatting", () => {
       it("shouldn't display small numbers as 0", () => {
         expect(formatNumber(0.1, { compact: true })).toEqual("0.1");
         expect(formatNumber(-0.1, { compact: true })).toEqual("-0.1");
-        expect(formatNumber(0.01, { compact: true })).toEqual("~ 0");
-        expect(formatNumber(-0.01, { compact: true })).toEqual("~ 0");
+        expect(formatNumber(0.01, { compact: true })).toEqual("0.01");
+        expect(formatNumber(-0.01, { compact: true })).toEqual("-0.01");
       });
       it("should round up and down", () => {
-        expect(formatNumber(1.01, { compact: true })).toEqual("1");
-        expect(formatNumber(-1.01, { compact: true })).toEqual("-1");
-        expect(formatNumber(1.9, { compact: true })).toEqual("2");
-        expect(formatNumber(-1.9, { compact: true })).toEqual("-2");
+        expect(formatNumber(1.01, { compact: true })).toEqual("1.01");
+        expect(formatNumber(-1.01, { compact: true })).toEqual("-1.01");
+        expect(formatNumber(1.9, { compact: true })).toEqual("1.9");
+        expect(formatNumber(-1.9, { compact: true })).toEqual("-1.9");
       });
       it("should format large numbers with metric units", () => {
         expect(formatNumber(1, { compact: true })).toEqual("1");
@@ -55,12 +76,12 @@ describe("formatting", () => {
         const options = { compact: true, number_style: "percent" };
         expect(formatNumber(0, options)).toEqual("0%");
         expect(formatNumber(0.001, options)).toEqual("0.1%");
-        expect(formatNumber(0.0001, options)).toEqual("~ 0%");
+        expect(formatNumber(0.0001, options)).toEqual("0.01%");
         expect(formatNumber(0.001234, options)).toEqual("0.12%");
         expect(formatNumber(0.1, options)).toEqual("10%");
-        expect(formatNumber(0.1234, options)).toEqual("12%");
-        expect(formatNumber(0.019, options)).toEqual("2%");
-        expect(formatNumber(0.021, options)).toEqual("2%");
+        expect(formatNumber(0.1234, options)).toEqual("12.34%");
+        expect(formatNumber(0.019, options)).toEqual("1.9%");
+        expect(formatNumber(0.021, options)).toEqual("2.1%");
         expect(formatNumber(11.11, options)).toEqual("1.1k%");
         expect(formatNumber(-0.22, options)).toEqual("-22%");
       });
@@ -79,9 +100,11 @@ describe("formatting", () => {
           number_style: "currency",
           currency: "USD",
         };
-        expect(formatNumber(0, options)).toEqual("$0");
-        expect(formatNumber(0.001, options)).toEqual("~$0");
-        expect(formatNumber(7.24, options)).toEqual("$7");
+        expect(formatNumber(0, options)).toEqual("$0.00");
+        expect(formatNumber(0.001, options)).toEqual("$0.00");
+        expect(formatNumber(7.24, options)).toEqual("$7.24");
+        expect(formatNumber(7.249, options)).toEqual("$7.25");
+        expect(formatNumber(724.9, options)).toEqual("$724.90");
         expect(formatNumber(1234.56, options)).toEqual("$1.2k");
         expect(formatNumber(1234567.89, options)).toEqual("$1.2M");
         expect(formatNumber(-1234567.89, options)).toEqual("$-1.2M");
@@ -152,26 +175,26 @@ describe("formatting", () => {
     it("should format numbers with commas", () => {
       expect(
         formatValue(12345, {
-          column: { base_type: TYPE.Number, special_type: TYPE.Number },
+          column: { base_type: TYPE.Number, semantic_type: TYPE.Number },
         }),
       ).toEqual("12,345");
     });
     it("should format zip codes without commas", () => {
       expect(
         formatValue(12345, {
-          column: { base_type: TYPE.Number, special_type: TYPE.ZipCode },
+          column: { base_type: TYPE.Number, semantic_type: TYPE.ZipCode },
         }),
       ).toEqual("12345");
     });
     it("should format latitude and longitude columns correctly", () => {
       expect(
         formatValue(37.7749, {
-          column: { base_type: TYPE.Number, special_type: TYPE.Latitude },
+          column: { base_type: TYPE.Number, semantic_type: TYPE.Latitude },
         }),
       ).toEqual("37.77490000° N");
       expect(
         formatValue(-122.4194, {
-          column: { base_type: TYPE.Number, special_type: TYPE.Longitude },
+          column: { base_type: TYPE.Number, semantic_type: TYPE.Longitude },
         }),
       ).toEqual("122.41940000° W");
     });
@@ -183,6 +206,21 @@ describe("formatting", () => {
         ),
       ).toEqual(true);
     });
+    it("should not return a component for links in jsx + rich mode if there's click behavior", () => {
+      const formatted = formatValue("http://metabase.com/", {
+        jsx: true,
+        rich: true,
+        click_behavior: {
+          linkTemplate: "foo",
+          linkTextTemplate: "foo",
+          linkType: "url",
+          type: "link",
+        },
+        clicked: {},
+      });
+      expect(isElementOfType(formatted, ExternalLink)).toEqual(false);
+      expect(formatted).toEqual("foo");
+    });
     it("should return a component for email addresses in jsx + rich mode", () => {
       expect(
         isElementOfType(
@@ -191,14 +229,40 @@ describe("formatting", () => {
         ),
       ).toEqual(true);
     });
-    it("should not add mailto prefix if there's a different special type", () => {
+    it("should not add mailto prefix if there's a different semantic type", () => {
       expect(
         formatValue("foobar@example.com", {
           jsx: true,
           rich: true,
-          column: { special_type: "type/PK" },
+          column: { semantic_type: "type/PK" },
         }),
       ).toEqual("foobar@example.com");
+    });
+    it("should display hour-of-day with 12 hour clock", () => {
+      expect(
+        formatValue(24, {
+          date_style: null,
+          time_enabled: "minutes",
+          time_style: "h:mm A",
+          column: {
+            base_type: "type/DateTime",
+            unit: "hour-of-day",
+          },
+        }),
+      ).toEqual("12:00 AM");
+    });
+    it("should display hour-of-day with 24 hour clock", () => {
+      expect(
+        formatValue(24, {
+          date_style: null,
+          time_enabled: "minutes",
+          time_style: "k:mm",
+          column: {
+            base_type: "type/DateTime",
+            unit: "hour-of-day",
+          },
+        }),
+      ).toEqual("24:00");
     });
   });
 
@@ -232,7 +296,7 @@ describe("formatting", () => {
           formatUrl("myproto:some-custom-thing", {
             jsx: true,
             rich: true,
-            column: { special_type: TYPE.URL },
+            column: { semantic_type: TYPE.URL },
           }),
           ExternalLink,
         ),
@@ -243,7 +307,7 @@ describe("formatting", () => {
         formatUrl("invalid-blah-blah-blah", {
           jsx: true,
           rich: true,
-          column: { special_type: TYPE.URL },
+          column: { semantic_type: TYPE.URL },
         }),
       ).toEqual("invalid-blah-blah-blah");
     });
@@ -271,6 +335,16 @@ describe("formatting", () => {
         }),
       ).toEqual("data:text/plain;charset=utf-8,hello%20world");
     });
+    it("should return link component for type/URL and  view_as = link", () => {
+      const formatted = formatUrl("http://whatever", {
+        jsx: true,
+        rich: true,
+        column: { semantic_type: TYPE.URL },
+        view_as: "link",
+      });
+      expect(isElementOfType(formatted, ExternalLink)).toEqual(true);
+    });
+
     it("should not crash if column is null", () => {
       expect(
         formatUrl("foobar", {
@@ -291,7 +365,7 @@ describe("formatting", () => {
       ).toEqual("July 7, 2019 – July 13, 2019");
     });
 
-    it("should always format week ranges in en locale", () => {
+    it("should always format week ranges according to returned data", () => {
       try {
         // globally set locale to es
         moment.locale("es");
@@ -304,6 +378,26 @@ describe("formatting", () => {
         // globally reset locale
         moment.locale(false);
       }
+    });
+  });
+
+  describe("slugify", () => {
+    it("should slugify Chinese", () => {
+      expect(slugify("類型")).toEqual("%E9%A1%9E%E5%9E%8B");
+    });
+
+    it("should slugify multiple words", () => {
+      expect(slugify("Test Parameter")).toEqual("test_parameter");
+    });
+
+    it("should slugify Russian", () => {
+      expect(slugify("русский язык")).toEqual(
+        "%D1%80%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9_%D1%8F%D0%B7%D1%8B%D0%BA",
+      );
+    });
+
+    it("should slugify diacritics", () => {
+      expect(slugify("än umlaut")).toEqual("%C3%A4n_umlaut");
     });
   });
 });

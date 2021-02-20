@@ -1,10 +1,12 @@
 (ns metabase.util.date-2-test
-  (:require [clojure
-             [string :as str]
-             [test :refer :all]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer :all]
             [java-time :as t]
+            [metabase.test :as mt]
             [metabase.test.util.timezone :as tu.timezone]
-            [metabase.util.date-2 :as u.date]))
+            [metabase.util.date-2 :as u.date]
+            [metabase.util.date-2.common :as u.date.common])
+  (:import java.time.temporal.ChronoField))
 
 (deftest parse-test
   ;; system timezone should not affect the way strings are parsed
@@ -74,7 +76,8 @@
             ;; The 'UTC' default timezone ID should be ignored entirely since all these literals specify their offset
             (is-parsed? expected s "UTC")))
         (testing "literals with a timezone id"
-          (doseq [[s expected] {"2019-10-28-07:00[America/Los_Angeles]"              (t/zoned-date-time 2019 10 28  0  0  0               0 (t/zone-id "America/Los_Angeles"))
+          (doseq [[s expected] {"2019-12-13T16:31:00-08:00[US/Pacific]"              (t/zoned-date-time 2019 12 13 16 31  0               0 (t/zone-id "US/Pacific"))
+                                "2019-10-28-07:00[America/Los_Angeles]"              (t/zoned-date-time 2019 10 28  0  0  0               0 (t/zone-id "America/Los_Angeles"))
                                 "2019-10-28T13-07:00[America/Los_Angeles]"           (t/zoned-date-time 2019 10 28 13  0  0               0 (t/zone-id "America/Los_Angeles"))
                                 "2019-10-28T13:14-07:00[America/Los_Angeles]"        (t/zoned-date-time 2019 10 28 13 14  0               0 (t/zone-id "America/Los_Angeles"))
                                 "2019-10-28T13:14:15-07:00[America/Los_Angeles]"     (t/zoned-date-time 2019 10 28 13 14 15               0 (t/zone-id "America/Los_Angeles"))
@@ -136,12 +139,45 @@
 
 ;; TODO - more tests!
 (deftest format-test
-  (is (= "2019-11-01 18:39:00-07:00"
-         (u.date/format-sql (t/zoned-date-time "2019-11-01T18:39:00-07:00[US/Pacific]")))))
+  (testing "ZonedDateTime"
+    (testing "should get formatted as the same way as an OffsetDateTime"
+      (is (= "2019-11-01T18:39:00-07:00"
+             (u.date/format (t/zoned-date-time "2019-11-01T18:39:00-07:00[US/Pacific]")))))
+    (testing "make sure it can handle different DST offsets correctly"
+      (is (= "2020-02-13T16:31:00-08:00"
+             (u.date/format (t/zoned-date-time "2020-02-13T16:31:00-08:00[US/Pacific]"))))))
+  (testing "Instant"
+    (is (= "1970-01-01T00:00:00Z"
+           (u.date/format (t/instant "1970-01-01T00:00:00Z")))))
+  (testing "nil"
+    (is (= nil
+           (u.date/format nil))
+        "Passing `nil` should return `nil`")))
 
 (deftest format-sql-test
-  (is (= "2019-11-05 19:27:00"
-         (u.date/format-sql (t/local-date-time "2019-11-05T19:27")))))
+  (testing "LocalDateTime"
+    (is (= "2019-11-05 19:27:00"
+           (u.date/format-sql (t/local-date-time "2019-11-05T19:27")))))
+  (testing "ZonedDateTime"
+    (is (= "2019-11-01 18:39:00-07:00"
+           (u.date/format-sql (t/zoned-date-time "2019-11-01T18:39:00-07:00[US/Pacific]")))
+        "should get formatted as the same way as an OffsetDateTime")))
+
+(deftest adjuster-test
+  (let [now (t/zoned-date-time "2019-12-10T17:17:00-08:00[US/Pacific]")]
+    (testing "adjust temporal value to first day of week (Sunday)"
+      (is (= (t/zoned-date-time "2019-12-08T17:17-08:00[US/Pacific]")
+             (t/adjust now (u.date/adjuster :first-day-of-week)))))
+    (testing "adjust temporal value to first day of ISO week (Monday)"
+      (is (= (t/zoned-date-time "2019-12-09T17:17-08:00[US/Pacific]")
+             (t/adjust now (u.date/adjuster :first-day-of-iso-week)))))
+    (testing "adjust temporal value to first day of first week of year (previous or same Sunday as first day of year)"
+      (is (= (t/zoned-date-time "2018-12-30T17:17-08:00[US/Pacific]")
+             (t/adjust now (u.date/adjuster :first-week-of-year))
+             (t/adjust now (u.date/adjuster :week-of-year 1)))))
+    (testing "adjust temporal value to the 50th week of the year"
+      (is (= (t/zoned-date-time "2019-12-08T17:17-08:00[US/Pacific]")
+             (t/adjust now (u.date/adjuster :week-of-year 50)))))))
 
 (deftest extract-test
   (testing "u.date/extract with 2 args"
@@ -341,3 +377,132 @@
         (testing "exclusive start"
           (is (= {:start (t/local-date-time "2019-11-17T23:59")}
                  (comparison-range :>= {:start :exclusive}))))))))
+
+(deftest period-duration-test
+  (testing "Creating a period duration from a string"
+    (is (= (org.threeten.extra.PeriodDuration/of (t/duration "PT59S"))
+           (u.date/period-duration "PT59S"))))
+  (testing "Creating a period duration out of two temporal types of the same class"
+    (is (= (u.date/period-duration "PT1S")
+           (u.date/period-duration (t/offset-date-time "2019-12-03T02:30:05Z") (t/offset-date-time "2019-12-03T02:30:06Z")))))
+  (testing "Creating a period duration out of two different temporal types"
+    (is (= (u.date/period-duration "PT59S")
+           (u.date/period-duration (t/instant "2019-12-03T02:30:27Z") (t/offset-date-time "2019-12-03T02:31:26Z"))))))
+
+(deftest older-than-test
+  (let [now (t/instant "2019-12-04T00:45:00Z")]
+    (t/with-clock (t/mock-clock now (t/zone-id "America/Los_Angeles"))
+      (testing (str "now = " now)
+        (doseq [t ((juxt t/instant t/local-date t/local-date-time t/offset-date-time identity)
+                   (t/zoned-date-time "2019-11-01T00:00-08:00[US/Pacific]"))]
+          (testing (format "t = %s" (pr-str t))
+            (is (= true
+                   (u.date/older-than? t (t/weeks 2)))
+                (format "%s happened before 2019-11-19" (pr-str t)))
+            (is (= false
+                   (u.date/older-than? t (t/months 2)))
+                (format "%s did not happen before 2019-10-03" (pr-str t)))))))))
+
+(deftest static-instances-locale-test
+  (testing "in the Turkish locale, :minute-of-hour can be found"
+    (mt/with-locale "tr"
+      (is (some? (:minute-of-hour (u.date.common/static-instances ChronoField)))))))
+
+(deftest with-time-zone-same-instant-test
+  ;; `t` = original value
+  ;; `expected` = the same value when shifted to `zone`
+  (doseq [[t expected zone]
+          [[(t/zoned-date-time 2011 4 18 0 0 0 0 (t/zone-id "Asia/Tokyo"))
+            (t/zoned-date-time "2011-04-17T15:00:00Z[UTC]")
+            "UTC"]
+
+           [(t/zoned-date-time 2011 4 18 0 0 0 0 (t/zone-id "Asia/Tokyo"))
+            (t/zoned-date-time "2011-04-18T00:00:00+09:00[Asia/Tokyo]")
+            "Asia/Tokyo"]
+
+           [(t/zoned-date-time 2011 4 18 0 0 0 0 (t/zone-id "UTC"))
+            (t/zoned-date-time "2011-04-18T09:00:00+09:00[Asia/Tokyo]")
+            "Asia/Tokyo"]
+
+           [(t/zoned-date-time 2011 4 18 0 0 0 0 (t/zone-id "UTC"))
+            (t/zoned-date-time "2011-04-18T00:00:00Z[UTC]")
+            "UTC"]
+
+           [(t/offset-date-time 2011 4 18 0 0 0 0 (t/zone-offset 9))
+            (t/offset-date-time "2011-04-17T15:00:00Z")
+            "UTC"]
+
+           [(t/offset-date-time 2011 4 18 0 0 0 0 (t/zone-offset 9))
+            (t/offset-date-time "2011-04-18T00:00:00+09:00")
+            "Asia/Tokyo"]
+
+           [(t/offset-date-time 2011 4 18 0 0 0 0 (t/zone-offset 0))
+            (t/offset-date-time "2011-04-18T09:00:00+09:00")
+            "Asia/Tokyo"]
+
+           ;; instants should return arg as-is since they're always normalized to UTC
+           [(t/instant (t/offset-date-time 2011 4 18 0 0 0 0 (t/zone-offset 0)))
+            (t/instant "2011-04-18T00:00:00Z")
+            "UTC"]
+
+           [(t/instant (t/offset-date-time 2011 4 18 0 0 0 0 (t/zone-offset 0)))
+            (t/instant "2011-04-18T00:00:00Z")
+            "Asia/Tokyo"]
+
+           [(t/instant (t/offset-date-time 2011 4 18 0 0 0 0 (t/zone-offset 0)))
+            (t/instant "2011-04-18T00:00:00Z")
+            "UTC"]
+
+           [(t/local-date-time 2011 4 18 0 0 0 0)
+            (t/offset-date-time "2011-04-18T00:00:00+09:00")
+            "Asia/Tokyo"]
+
+           [(t/local-date-time 2011 4 18 0 0 0 0)
+            (t/offset-date-time "2011-04-18T00:00:00Z")
+            "UTC"]
+
+           [(t/local-date 2011 4 18)
+            (t/offset-date-time "2011-04-18T00:00:00+09:00")
+            "Asia/Tokyo"]
+
+           [(t/local-date 2011 4 18)
+            (t/offset-date-time "2011-04-18T00:00:00Z")
+            "UTC"]
+
+           [(t/offset-time 19 55 0 0 (t/zone-offset 9))
+            (t/offset-time "10:55:00Z")
+            "UTC"]
+
+           [(t/offset-time 19 55 0 0 (t/zone-offset 9))
+            (t/offset-time "19:55:00+09:00")
+            "Asia/Tokyo"]
+
+           [(t/offset-time 19 55 0 0 (t/zone-offset 0))
+            (t/offset-time "19:55:00Z")
+            "UTC"]
+
+           [(t/offset-time 19 55 0 0 (t/zone-offset 0))
+            (t/offset-time "04:55:00+09:00")
+            "Asia/Tokyo"]
+
+           [(t/local-time 19 55)
+            (t/offset-time "19:55:00Z")
+            "UTC"]
+
+           [(t/local-time 19 55)
+            (t/offset-time "19:55:00+09:00")
+            "Asia/Tokyo"]]]
+    ;; results should be completely independent of the system clock
+    (doseq [[clock-instant clock-zone] [["2019-07-01T00:00:00Z" "UTC"]
+                                        ["2019-01-01T00:00:00Z" "US/Pacific"]
+                                        ["2019-07-01T00:00:00Z" "US/Pacific"]
+                                        ["2019-07-01T13:14:15Z" "UTC"]
+                                        ["2019-07-01T13:14:15Z" "US/Pacific"]]]
+      (testing (format "system clock = %s; system timezone = %s" clock-instant clock-zone)
+        (mt/with-clock (t/mock-clock (t/instant clock-instant) clock-zone)
+          (testing (format "\nshift %s '%s' to timezone ID '%s'" (.getName (class t)) t zone)
+            (is (= expected
+                   (u.date/with-time-zone-same-instant t (t/zone-id zone)))))))))
+  (testing "can handle infinity dates (#12761)"
+    (is (u.date/with-time-zone-same-instant java.time.OffsetDateTime/MAX (t/zone-id "UTC")))
+    (is (u.date/with-time-zone-same-instant java.time.OffsetDateTime/MIN (t/zone-id "UTC")))))

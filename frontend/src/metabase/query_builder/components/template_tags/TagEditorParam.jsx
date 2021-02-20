@@ -10,8 +10,8 @@ import Select, { Option } from "metabase/components/Select";
 import ParameterValueWidget from "metabase/parameters/components/ParameterValueWidget";
 
 import { parameterOptionsForField } from "metabase/meta/Dashboard";
-import type { TemplateTag } from "metabase/meta/types/Query";
-import type { Database } from "metabase/meta/types/Database";
+import type { TemplateTag } from "metabase-types/types/Query";
+import type { Database } from "metabase-types/types/Database";
 
 import Field from "metabase-lib/lib/metadata/Field";
 import { fetchField } from "metabase/redux/metadata";
@@ -19,7 +19,7 @@ import { getMetadata } from "metabase/selectors/metadata";
 import { SchemaTableAndFieldDataSelector } from "metabase/query_builder/components/DataSelector";
 import Metadata from "metabase-lib/lib/metadata/Metadata";
 import MetabaseSettings from "metabase/lib/settings";
-import type { FieldId } from "metabase/meta/types/Field";
+import type { FieldId } from "metabase-types/types/Field";
 
 type Props = {
   tag: TemplateTag,
@@ -83,7 +83,7 @@ export default class TagEditorParam extends Component {
     const { tag, onUpdate, metadata } = this.props;
     const dimension = ["field-id", fieldId];
     if (!_.isEqual(tag.dimension !== dimension)) {
-      const field = metadata.fields[dimension[1]];
+      const field = metadata.field(dimension[1]);
       if (!field) {
         return;
       }
@@ -107,12 +107,11 @@ export default class TagEditorParam extends Component {
 
   render() {
     const { tag, database, databases, metadata } = this.props;
-
     let widgetOptions = [],
       table,
       fieldMetadataLoaded = false;
     if (tag.type === "dimension" && Array.isArray(tag.dimension)) {
-      const field = metadata.fields[tag.dimension[1]];
+      const field = metadata.field(tag.dimension[1]);
 
       if (field) {
         widgetOptions = parameterOptionsForField(field);
@@ -125,26 +124,16 @@ export default class TagEditorParam extends Component {
     const hasSelectedDimensionField =
       isDimension && Array.isArray(tag.dimension);
     const hasWidgetOptions = widgetOptions && widgetOptions.length > 0;
+
     return (
-      <div className="pb2 mb2 border-bottom border-dark">
-        <h3 className="pb2">{tag.name}</h3>
+      <div className="px3 pt3 mb1 border-top">
+        <h4 className="text-medium py1">{t`Variable name`}</h4>
+        <h3 className="text-heavy text-brand align-self-end mb4">{tag.name}</h3>
 
-        <div className="pb1">
-          <h5 className="pb1 text-normal">{t`Filter label`}</h5>
-          <InputBlurChange
-            type="text"
-            value={tag["display-name"]}
-            className="AdminSelect p1 text-bold text-medium bordered border-medium rounded full"
-            onBlurChange={e =>
-              this.setParameterAttribute("display-name", e.target.value)
-            }
-          />
-        </div>
-
-        <div className="pb1">
-          <h5 className="pb1 text-normal">{t`Variable type`}</h5>
+        <div className="pb4">
+          <h4 className="text-medium pb1">{t`Variable type`}</h4>
           <Select
-            className="border-medium bg-white block"
+            className="block"
             value={tag.type}
             onChange={e => this.setType(e.target.value)}
             isInitiallyOpen={!tag.type}
@@ -159,19 +148,19 @@ export default class TagEditorParam extends Component {
         </div>
 
         {tag.type === "dimension" && (
-          <div className="pb1">
-            <h5 className="pb1 text-normal">
+          <div className="pb4">
+            <h4 className="text-medium pb1">
               {t`Field to map to`}
               {tag.dimension == null && (
                 <span className="text-error mx1">(required)</span>
               )}
-            </h5>
+            </h4>
 
             {(!hasSelectedDimensionField ||
               (hasSelectedDimensionField && fieldMetadataLoaded)) && (
               <SchemaTableAndFieldDataSelector
                 databases={databases}
-                selectedDatabaseId={database.id}
+                selectedDatabaseId={database ? database.id : null}
                 selectedTableId={table ? table.id : null}
                 selectedFieldId={
                   hasSelectedDimensionField ? tag.dimension[1] : null
@@ -179,16 +168,18 @@ export default class TagEditorParam extends Component {
                 setFieldFn={fieldId => this.setDimension(fieldId)}
                 className="AdminSelect flex align-center"
                 isInitiallyOpen={!tag.dimension}
+                triggerIconSize={12}
+                renderAsSelect={true}
               />
             )}
           </div>
         )}
 
         {hasSelectedDimensionField && (
-          <div className="pb1">
-            <h5 className="pb1 text-normal">{t`Filter widget type`}</h5>
+          <div className="pb4">
+            <h4 className="text-medium pb1">{t`Filter widget type`}</h4>
             <Select
-              className="border-med bg-white block"
+              className="block"
               value={tag["widget-type"]}
               onChange={e =>
                 this.setParameterAttribute("widget-type", e.target.value)
@@ -205,7 +196,7 @@ export default class TagEditorParam extends Component {
                 ))}
             </Select>
             {!hasWidgetOptions && (
-              <p className="pb1">
+              <p>
                 {t`There aren't any filter widgets for this type of field yet.`}{" "}
                 <Link
                   to={MetabaseSettings.docsUrl(
@@ -222,8 +213,23 @@ export default class TagEditorParam extends Component {
           </div>
         )}
 
-        <div className="flex align-center pb1">
-          <h5 className="text-normal mr1">{t`Required?`}</h5>
+        {(hasWidgetOptions || !isDimension) && (
+          <div className="pb4">
+            <h4 className="text-medium pb1">{t`Filter widget label`}</h4>
+            <InputBlurChange
+              type="text"
+              value={tag["display-name"]}
+              className="AdminSelect p1 text-bold text-dark bordered border-medium rounded full"
+              style={{ fontSize: "14px" }}
+              onBlurChange={e =>
+                this.setParameterAttribute("display-name", e.target.value)
+              }
+            />
+          </div>
+        )}
+
+        <div className="pb3">
+          <h4 className="text-medium pb1">{t`Required?`}</h4>
           <Toggle
             value={tag.required}
             onChange={value => this.setRequired(value)}
@@ -232,8 +238,8 @@ export default class TagEditorParam extends Component {
 
         {((tag.type !== "dimension" && tag.required) ||
           (tag.type === "dimension" || tag["widget-type"])) && (
-          <div className="pb1">
-            <h5 className="pb1 text-normal">{t`Default filter widget value`}</h5>
+          <div className="pb3">
+            <h4 className="text-medium pb1">{t`Default filter widget value`}</h4>
             <ParameterValueWidget
               parameter={{
                 type:

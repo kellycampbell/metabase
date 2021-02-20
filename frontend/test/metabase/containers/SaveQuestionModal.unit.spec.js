@@ -1,5 +1,5 @@
 import React from "react";
-import { shallow } from "enzyme";
+import { render, screen, fireEvent } from "@testing-library/react";
 
 import SaveQuestionModal from "metabase/containers/SaveQuestionModal";
 import Question from "metabase-lib/lib/Question";
@@ -11,28 +11,31 @@ import {
   metadata,
 } from "__support__/sample_dataset_fixture";
 
-const createFnMock = jest.fn(() => Promise.resolve());
-let saveFnMock;
+import { createStore, combineReducers } from "redux";
+import { Provider } from "react-redux";
+import { reducer as form } from "redux-form";
 
-const getSaveQuestionModal = (question, originalQuestion) => (
-  <SaveQuestionModal
-    card={question.card()}
-    originalCard={originalQuestion && originalQuestion.card()}
-    tableMetadata={question.tableMetadata()}
-    createFn={createFnMock}
-    saveFn={saveFnMock}
-    onClose={() => {}}
-  />
-);
+const renderSaveQuestionModal = (question, originalQuestion) => {
+  const store = createStore(combineReducers({ form }));
+  const onCreateMock = jest.fn(() => Promise.resolve());
+  const onSaveMock = jest.fn(() => Promise.resolve());
+  render(
+    <Provider store={store}>
+      <SaveQuestionModal
+        card={question.card()}
+        originalCard={originalQuestion && originalQuestion.card()}
+        tableMetadata={question.table()}
+        onCreate={onCreateMock}
+        onSave={onSaveMock}
+        onClose={() => {}}
+      />
+    </Provider>,
+  );
+  return { store, onSaveMock, onCreateMock };
+};
 
 describe("SaveQuestionModal", () => {
-  beforeEach(() => {
-    // we need to create a new save mock before each test to ensure that each
-    // test has its own instance
-    saveFnMock = jest.fn(() => Promise.resolve());
-  });
-
-  it("should call createFn correctly for a new question", async () => {
+  it("should call onCreate correctly for a new question", async () => {
     const newQuestion = Question.create({
       databaseId: SAMPLE_DATASET.id,
       tableId: ORDERS.id,
@@ -43,11 +46,13 @@ describe("SaveQuestionModal", () => {
       .question();
 
     // Use the count aggregation as an example case (this is equally valid for filters and groupings)
-    const component = shallow(getSaveQuestionModal(newQuestion, null));
-    await component.instance().formSubmitted();
-    expect(createFnMock.mock.calls.length).toBe(1);
+    const { onCreateMock } = renderSaveQuestionModal(newQuestion, null);
+
+    fireEvent.click(screen.getByText("Save"));
+    expect(onCreateMock.mock.calls).toHaveLength(1);
   });
-  it("should call saveFn correctly for a dirty, saved question", async () => {
+
+  it("should call onSave correctly for a dirty, saved question", async () => {
     const originalQuestion = Question.create({
       databaseId: SAMPLE_DATASET.id,
       tableId: ORDERS.id,
@@ -65,11 +70,12 @@ describe("SaveQuestionModal", () => {
       .question();
 
     // Use the count aggregation as an example case (this is equally valid for filters and groupings)
-    const component = shallow(
-      getSaveQuestionModal(dirtyQuestion, originalQuestion),
+    const { onSaveMock } = renderSaveQuestionModal(
+      dirtyQuestion,
+      originalQuestion,
     );
-    await component.instance().formSubmitted();
-    expect(saveFnMock.mock.calls.length).toBe(1);
+    fireEvent.click(screen.getByText("Save"));
+    expect(onSaveMock.mock.calls.length).toBe(1);
   });
 
   it("should preserve the collection_id of a question in overwrite mode", async () => {
@@ -93,10 +99,11 @@ describe("SaveQuestionModal", () => {
       .breakout(["field-id", ORDERS.TOTAL.id])
       .question();
 
-    const component = shallow(
-      getSaveQuestionModal(dirtyQuestion, originalQuestion),
+    const { onSaveMock } = renderSaveQuestionModal(
+      dirtyQuestion,
+      originalQuestion,
     );
-    await component.instance().formSubmitted();
-    expect(saveFnMock.mock.calls[0][0].collection_id).toEqual(5);
+    fireEvent.click(screen.getByText("Save"));
+    expect(onSaveMock.mock.calls[0][0].collection_id).toEqual(5);
   });
 });

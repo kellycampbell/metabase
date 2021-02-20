@@ -18,18 +18,11 @@ import {
 } from "./utils";
 
 import {
-  minTimeseriesUnit,
-  computeTimeseriesDataInverval,
-  getTimezone,
-} from "./timeseries";
-
-import { computeNumericDataInverval } from "./numeric";
-
-import {
   applyChartTimeseriesXAxis,
   applyChartQuantitativeXAxis,
   applyChartOrdinalXAxis,
   applyChartYAxis,
+  getYValueFormatter,
 } from "./apply_axis";
 
 import { setupTooltips } from "./apply_tooltips";
@@ -55,9 +48,13 @@ import {
   getDatas,
   getFirstNonEmptySeries,
   getXValues,
+  getXInterval,
+  syntheticStackedBarsForWaterfallChart,
+  xValueForWaterfallTotal,
   isDimensionTimeseries,
   isRemappedToString,
   isMultiCardSeries,
+  hasClickBehavior,
 } from "./renderer_utils";
 
 import lineAndBarOnRender from "./LineAreaBarPostRender";
@@ -72,7 +69,7 @@ import {
 import { lineAddons } from "./graph/addons";
 import { initBrush } from "./graph/brush";
 
-import type { VisualizationProps } from "metabase/meta/types/Visualization";
+import type { VisualizationProps } from "metabase-types/types/Visualization";
 
 const BAR_PADDING_RATIO = 0.2;
 const DEFAULT_INTERPOLATION = "linear";
@@ -82,7 +79,8 @@ const enableBrush = (series, onChangeCardAndRun) =>
     onChangeCardAndRun &&
     !isMultiCardSeries(series) &&
     isStructured(series[0].card) &&
-    !isRemappedToString(series)
+    !isRemappedToString(series) &&
+    !hasClickBehavior(series)
   );
 
 /************************************************************ SETUP ************************************************************/
@@ -99,30 +97,6 @@ function checkSeriesIsValid({ series, maxSeries }) {
   }
 }
 
-function getXInterval({ settings, series }, xValues, warn) {
-  if (isTimeseries(settings)) {
-    // We need three pieces of information to define a timeseries range:
-    // 1. interval - it's really the "unit": month, day, etc
-    // 2. count - how many intervals per tick?
-    // 3. timezone - what timezone are values in? days vary in length by timezone
-    const unit = minTimeseriesUnit(series.map(s => s.data.cols[0].unit));
-    const timezone = getTimezone(series, warn);
-    const { count, interval } = computeTimeseriesDataInverval(xValues, unit);
-    return { count, interval, timezone };
-  } else if (isQuantitative(settings) || isHistogram(settings)) {
-    // Get the bin width from binning_info, if available
-    // TODO: multiseries?
-    const binningInfo = getFirstNonEmptySeries(series).data.cols[0]
-      .binning_info;
-    if (binningInfo) {
-      return binningInfo.bin_width;
-    }
-
-    // Otherwise try to infer from the X values
-    return computeNumericDataInverval(xValues);
-  }
-}
-
 function getXAxisProps(props, datas, warn) {
   const rawXValues = getXValues(props);
   const isHistogram = isHistogramBar(props);
@@ -132,7 +106,10 @@ function getXAxisProps(props, datas, warn) {
   // This compensates for the barshifting we do align ticks
   const xValues = isHistogram
     ? [...rawXValues, Math.max(...rawXValues) + xInterval]
+    : props.chartType === "waterfall" && props.settings["waterfall.show_total"]
+    ? [...rawXValues, xValueForWaterfallTotal(props)]
     : rawXValues;
+
   return {
     isHistogramBar: isHistogram,
     xDomain: d3.extent(xValues),
@@ -262,15 +239,20 @@ function getYExtentsForGroups(groups) {
 /// This is only exported for testing.
 export function getDimensionsAndGroupsAndUpdateSeriesDisplayNames(
   props,
-  datas,
+  originalDatas,
   warn,
 ) {
-  const { settings, chartType } = props;
+  const { settings, chartType, series } = props;
+  const datas =
+    chartType === "waterfall"
+      ? syntheticStackedBarsForWaterfallChart(originalDatas, settings, series)
+      : originalDatas;
+  const isStackedBar = isStacked(settings, datas) || chartType === "waterfall";
 
   const { groups, dimension } =
     chartType === "scatter"
       ? getDimensionsAndGroupsForScatterChart(datas)
-      : isStacked(settings, datas)
+      : isStackedBar
       ? getDimensionsAndGroupsAndUpdateSeriesDisplayNamesForStackedChart(
           props,
           datas,
@@ -375,7 +357,6 @@ function makeBrushChangeFunctions({ series, onChangeCardAndRun }) {
     if (range) {
       const column = series[0].data.cols[0];
       const card = series[0].card;
-      // $FlowFixMe: Question requires Metadata but we don't actually need it in this case
       const query = new Question(card).query();
       const [start, end] = range;
       if (isDimensionTimeseries(series)) {
@@ -408,6 +389,7 @@ function getDcjsChart(cardType, parent) {
     case "area":
       return lineAddons(dc.lineChart(parent));
     case "bar":
+    case "waterfall":
       return dc.barChart(parent);
     case "scatter":
       return dc.bubbleChart(parent);
@@ -493,6 +475,24 @@ function setChartColor({ series, settings, chartType }, chart, groups, index) {
     chart.ordinalColors(
       series.map(single => colorsByKey[keyForSingleSeries(single)]),
     );
+  }
+
+  if (chartType === "waterfall") {
+    chart.on("pretransition", function(chart) {
+      chart
+        .selectAll("g.stack._0 rect.bar")
+        .style("fill", "transparent")
+        .style("pointer-events", "none");
+      chart
+        .selectAll("g.stack._3 rect.bar")
+        .style("fill", settings["waterfall.total_color"]);
+      chart
+        .selectAll("g.stack._1 rect.bar")
+        .style("fill", settings["waterfall.decrease_color"]);
+      chart
+        .selectAll("g.stack._2 rect.bar")
+        .style("fill", settings["waterfall.increase_color"]);
+    });
   }
 }
 
@@ -782,7 +782,7 @@ function doHistogramBarStuff(parent) {
 /************************************************************ PUTTING IT ALL TOGETHER ************************************************************/
 
 type LineAreaBarProps = VisualizationProps & {
-  chartType: "line" | "area" | "bar" | "scatter",
+  chartType: "line" | "area" | "bar" | "waterfall" | "scatter",
   isScalarSeries: boolean,
   maxSeries: number,
 };
@@ -871,11 +871,12 @@ export default function lineAreaBar(
   }
 
   // HACK: compositeChart + ordinal X axis shenanigans. See https://github.com/dc-js/dc.js/issues/678 and https://github.com/dc-js/dc.js/issues/662
-  const hasBar = _.any(
-    series,
-    single => getSeriesDisplay(settings, single) === "bar",
-  );
-  parent._rangeBandPadding(hasBar ? BAR_PADDING_RATIO : 1);
+  if (!isHistogram(props.settings)) {
+    const hasBar =
+      _.any(series, single => getSeriesDisplay(settings, single) === "bar") ||
+      props.chartType === "waterfall";
+    parent._rangeBandPadding(hasBar ? BAR_PADDING_RATIO : 1);
+  }
 
   applyXAxisSettings(parent, props.series, xAxisProps);
 
@@ -885,13 +886,24 @@ export default function lineAreaBar(
 
   parent.render();
 
+  datas.map(data => {
+    data.map(d => {
+      if (d._waterfallValue) {
+        d[1] = d._waterfallValue;
+      }
+    });
+  });
+
   // apply any on-rendering functions (this code lives in `LineAreaBarPostRenderer`)
-  lineAndBarOnRender(
-    parent,
+  lineAndBarOnRender(parent, {
     onGoalHover,
-    yAxisProps.isSplit,
-    isStacked(parent.settings, datas),
-  );
+    isSplitAxis: yAxisProps.isSplit,
+    yAxisSplit: yAxisProps.yAxisSplit,
+    xInterval: xAxisProps.xInterval,
+    isStacked: isStacked(parent.settings, datas),
+    formatYValue: getYValueFormatter(parent, series, yAxisProps.yExtent),
+    datas,
+  });
 
   // only ordinal axis can display "null" values
   if (isOrdinal(parent.settings)) {
@@ -901,7 +913,8 @@ export default function lineAreaBar(
   if (onRender) {
     onRender({
       yAxisSplit: yAxisProps.yAxisSplit,
-      warnings: Object.values(warnings),
+      // $FlowFixMe
+      warnings: (Object.values(warnings): string[]),
     });
   }
 
@@ -917,6 +930,8 @@ export const areaRenderer = (element, props) =>
   lineAreaBar(element, { ...props, chartType: "area" });
 export const barRenderer = (element, props) =>
   lineAreaBar(element, { ...props, chartType: "bar" });
+export const waterfallRenderer = (element, props) =>
+  lineAreaBar(element, { ...props, chartType: "waterfall" });
 export const comboRenderer = (element, props) =>
   lineAreaBar(element, { ...props, chartType: "combo" });
 export const scatterRenderer = (element, props) =>

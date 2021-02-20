@@ -1,16 +1,12 @@
 (ns metabase.query-processor.error-type
   "A hierarchy of all QP error types. Ideally all QP exceptions should be `ex-data` maps with an `:type` key whose value
-  is one of the types here. If you see an Exception in QP code that doesn't return an `:type`, add it!")
+  is one of the types here. If you see an Exception in QP code that doesn't return an `:type`, add it!
+
+    (throw (ex-info (tru \"Don''t know how to parse {0} {1}\" (class x) x)
+                    {:type qp.error-type/invalid-parameter}))")
 
 (def ^:private hierarchy
-  (-> (make-hierarchy)
-      ;; errors deriving from `:client-error` are the equivalent of HTTP 4xx client status codes
-      (derive :client-error :error)
-      (derive :invalid-query :client-error)
-      ;; errors deriving from `:unexpected-server-error` are the equivalent of HTTP 5xx status codes
-      (derive :unexpected-server-error :error)
-      (derive :unexpected-qp-error :unexpected-server-error)
-      (derive :unexpected-db-error :unexpected-server-error)))
+  (make-hierarchy))
 
 (defn known-error-types
   "Set of all known QP error types."
@@ -54,6 +50,10 @@
   "The current user does not have required permissions to run the current query."
   :parent client)
 
+(deferror bad-configuration
+  "Something related to configuration (e.g. of a sandbox/GTAP) is preventing us from being able to run the query."
+  :parent client)
+
 (deferror invalid-query
   "Generic ancestor type for errors with the query map itself."
   :parent client)
@@ -63,10 +63,20 @@
   :parent invalid-query
   :show-in-embeds? true)
 
+(deferror invalid-parameter
+  "The query is parameterized, and a supplied parameter has an invalid value."
+  :parent invalid-query
+  :show-in-embeds? true)
+
+(deferror unsupported-feature
+  "The query is using a feature that is not supported by the database/driver."
+  :parent invalid-query
+  :show-in-embeds? true)
+
 ;;;; ### Server-Side Errors
 
 (deferror server
-  "Generic ancestor type for all unexpected server-side errors. Equivalent of a HTTP 5xx status code."
+  "Generic ancestor type for all *unexpected* server-side errors. Equivalent of a HTTP 5xx status code."
   :parent :error)
 
 (defn server-error?
@@ -74,14 +84,19 @@
   [error-type]
   (isa? hierarchy error-type :server))
 
+(deferror timed-out
+  "Error type if query fails to return the first row of results after some timeout."
+  :parent server
+  :show-in-embeds? true)
+
 ;;;; #### QP Errors
 
 (deferror qp
-  "Generic ancestor type for all unexpected errors (e.g., uncaught Exceptions) in QP code."
+  "Generic ancestor type for all unexpected errors (e.g., uncaught Exceptions) in Query Processor code."
   :parent server)
 
 (deferror driver
-  "Generic ancestor type for all errors related to bad drivers and uncaught Exceptions in driver code."
+  "Generic ancestor type for all unexpected errors related to bad drivers and uncaught Exceptions in driver code."
   :parent qp)
 
 ;;;; #### Data Warehouse (DB) Errors

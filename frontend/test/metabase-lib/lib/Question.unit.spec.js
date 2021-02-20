@@ -279,11 +279,22 @@ describe("Question", () => {
 
       it("should not set the display to scalar table was selected", () => {
         const question = new Question(orders_count_card, metadata)
-          .setSelectedDisplay("table")
-          .setSensibleDisplays(["table", "scalar"])
+          .setDisplay("table")
+          .lockDisplay()
+          .maybeUnlockDisplay(["table", "scalar"])
           .setDefaultDisplay();
 
         expect(question.display()).toBe("table");
+      });
+
+      it("should set the display to scalar if funnel was selected", () => {
+        const question = new Question(orders_count_card, metadata)
+          .setDisplay("funnel")
+          .lockDisplay()
+          .maybeUnlockDisplay(["table", "scalar"])
+          .setDefaultDisplay();
+
+        expect(question.display()).toBe("scalar");
       });
     });
   });
@@ -625,7 +636,7 @@ describe("Question", () => {
       it("returns a URL with hash for an unsaved question", () => {
         const question = new Question(dissoc(orders_raw_card, "id"), metadata);
         expect(question.getUrl()).toBe(
-          "/question#eyJuYW1lIjoiUmF3IG9yZGVycyBkYXRhIiwiZGF0YXNldF9xdWVyeSI6eyJ0eXBlIjoicXVlcnkiLCJkYXRhYmFzZSI6MSwicXVlcnkiOnsic291cmNlLXRhYmxlIjoxfX0sImRpc3BsYXkiOiJ0YWJsZSIsInZpc3VhbGl6YXRpb25fc2V0dGluZ3MiOnt9fQ==",
+          "/question#eyJkYXRhc2V0X3F1ZXJ5Ijp7ImRhdGFiYXNlIjoxLCJxdWVyeSI6eyJzb3VyY2UtdGFibGUiOjF9LCJ0eXBlIjoicXVlcnkifSwiZGlzcGxheSI6InRhYmxlIiwibmFtZSI6IlJhdyBvcmRlcnMgZGF0YSIsInZpc3VhbGl6YXRpb25fc2V0dGluZ3MiOnt9fQ==",
         );
       });
     });

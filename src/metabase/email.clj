@@ -2,14 +2,16 @@
   (:require [clojure.tools.logging :as log]
             [metabase.models.setting :as setting :refer [defsetting]]
             [metabase.util :as u]
-            [metabase.util
-             [i18n :refer [deferred-tru trs tru]]
-             [schema :as su]]
-            [postal
-             [core :as postal]
-             [support :refer [make-props]]]
+            [metabase.util.i18n :refer [deferred-tru trs tru]]
+            [metabase.util.schema :as su]
+            [postal.core :as postal]
+            [postal.support :refer [make-props]]
             [schema.core :as s])
   (:import javax.mail.Session))
+
+;; https://github.com/metabase/metabase/issues/11879#issuecomment-713816386
+(when-not *compile-files*
+  (System/setProperty "mail.mime.splitlongparameters" "false"))
 
 ;;; CONFIG
 
@@ -46,10 +48,12 @@
    Provided so you can swap this out with an \"inbox\" for test purposes."
   postal/send-message)
 
-(defn email-configured?
-  "Predicate function which returns `true` if we have a viable email configuration for the app, `false` otherwise."
-  []
-  (boolean (email-smtp-host)))
+(defsetting email-configured?
+  "Check if email is enabled and that the mandatory settings are configured."
+  :type       :boolean
+  :visibility :public
+  :setter     :none
+  :getter     #(boolean (email-smtp-host)))
 
 (defn- add-ssl-settings [m ssl-setting]
   (merge
@@ -82,7 +86,7 @@
         "other types should have a String message.")))
 
 (s/defn send-message-or-throw!
-  "Send an email to one or more RECIPIENTS. Upon success, this returns the MESSAGE that was just sent. This function
+  "Send an email to one or more `recipients`. Upon success, this returns the `message` that was just sent. This function
   does not catch and swallow thrown exceptions, it will bubble up."
   {:style/indent 0}
   [{:keys [subject recipients message-type message]} :- EmailMessage]
@@ -101,8 +105,8 @@
                                :content message}])}))
 
 (defn send-message!
-  "Send an email to one or more RECIPIENTS.
-  RECIPIENTS is a sequence of email addresses; MESSAGE-TYPE must be either `:text` or `:html` or `:attachments`.
+  "Send an email to one or more `recipients`.
+  `recipients` is a sequence of email addresses; `message-type` must be either `:text` or `:html` or `:attachments`.
 
      (email/send-message!
        :subject      \"[Metabase] Password Reset Request\"
@@ -110,7 +114,7 @@
        :message-type :text
        :message      \"How are you today?\")
 
-  Upon success, this returns the MESSAGE that was just sent. This function will catch and log any exception,
+  Upon success, this returns the `message` that was just sent. This function will catch and log any exception,
   returning a map with a description of the error"
   {:style/indent 0}
   [& {:keys [subject recipients message-type message] :as msg-args}]
@@ -118,7 +122,7 @@
     (send-message-or-throw! msg-args)
     (catch Throwable e
       (log/warn e (trs "Failed to send email"))
-      {:error   :ERROR
+      {:error   :ERROR ; Huh?
        :message (.getMessage e)})))
 
 (defn- run-smtp-test

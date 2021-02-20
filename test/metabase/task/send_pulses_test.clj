@@ -1,21 +1,19 @@
 (ns metabase.task.send-pulses-test
   (:require [expectations :refer :all]
-            [metabase
-             [email :as email]
-             [email-test :as et]
-             [pulse-test :refer [checkins-query]]]
-            [metabase.models
-             [card :refer [Card]]
-             [pulse :refer [Pulse]]
-             [pulse-card :refer [PulseCard]]
-             [pulse-channel :refer [PulseChannel]]
-             [pulse-channel-recipient :refer [PulseChannelRecipient]]]
+            [metabase.email :as email]
+            [metabase.email-test :as et]
+            [metabase.models.card :refer [Card]]
+            [metabase.models.pulse :refer [Pulse]]
+            [metabase.models.pulse-card :refer [PulseCard]]
+            [metabase.models.pulse-channel :refer [PulseChannel]]
+            [metabase.models.pulse-channel-recipient :refer [PulseChannelRecipient]]
+            [metabase.pulse.test-util :refer [checkins-query-card]]
             [metabase.task.send-pulses :refer :all]
             [metabase.test.data :as data]
             [metabase.test.data.users :as users]
             [toucan.util.test :as tt]))
 
-(tt/expect-with-temp [Card                 [{card-id :id}  (assoc (checkins-query {:breakout [["datetime-field" (data/id :checkins :date) "hour"]]})
+(tt/expect-with-temp [Card                 [{card-id :id}  (assoc (checkins-query-card {:breakout [["datetime-field" (data/id :checkins :date) "hour"]]})
                                                              :name "My Question Name")]
                       Pulse                [{pulse-id :id} {:alert_condition  "rows"
                                                             :alert_first_only false}]
@@ -42,14 +40,14 @@
        :exceptions @exceptions})))
 
 ;; Test that when we attempt to send a pulse that is archived, it just skips the pulse and sends nothing. Previously
-;; this failed schema validation (see issue #8581)
+;; this failed schema validation (see metabase#8581)
 (expect
   {:emails     (et/email-to :rasta
                             {:subject "Test"
                              :body    {"Test Message" true}})
    :exceptions []}
 
-  (tt/with-temp* [Card                 [{card-id :id}    (assoc (checkins-query {:breakout [["datetime-field" (data/id :checkins :date) "hour"]]})
+  (tt/with-temp* [Card                 [{card-id :id}    (assoc (checkins-query-card {:breakout [["datetime-field" (data/id :checkins :date) "hour"]]})
                                                            :name "My Question Name")]
                   Pulse                [{pulse-id :id}   {:name "Test", :archived true}]
                   PulseCard             [_               {:pulse_id pulse-id

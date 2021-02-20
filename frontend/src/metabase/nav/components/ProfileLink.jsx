@@ -45,6 +45,15 @@ export default class ProfileLink extends Component {
         link: Urls.accountSettings(),
         event: `Navbar;Profile Dropdown;Edit Profile`,
       },
+      ...(MetabaseSettings.isHosted() &&
+        admin && [
+          {
+            title: t`Manage Metabase Cloud`,
+            link: "https://store.metabase.com/login",
+            event: `Navbar;Profile Dropdown;ManageHosting ${tag}`,
+            externalLink: true,
+          },
+        ]),
       ...(admin && [
         {
           title: adminContext ? t`Exit admin` : t`Admin`,
@@ -85,7 +94,10 @@ export default class ProfileLink extends Component {
 
   render() {
     const { modalOpen } = this.state;
+    const adminContext = this.props.context === "admin";
     const { tag, date, ...versionExtra } = MetabaseSettings.get("version");
+    // don't show trademark if application name is whitelabeled
+    const showTrademark = t`Metabase` === "Metabase";
     return (
       <Box>
         <EntityMenu
@@ -94,7 +106,9 @@ export default class ProfileLink extends Component {
           triggerIcon="gear"
           triggerProps={{
             hover: {
-              backgroundColor: darken(color("brand")),
+              backgroundColor: adminContext
+                ? darken(color("accent7"))
+                : darken(color("brand")),
               color: "white",
             },
           }}
@@ -103,11 +117,12 @@ export default class ProfileLink extends Component {
           <Modal small onClose={this.closeModal}>
             <div className="px4 pt4 pb2 text-centered relative">
               <div className="text-brand pb2">
-                <LogoIcon width={48} height={48} />
+                <LogoIcon height={48} />
               </div>
-              <h2 style={{ fontSize: "1.75em" }} className="text-dark">
-                {t`Thanks for using`} Metabase!
-              </h2>
+              <h2
+                style={{ fontSize: "1.75em" }}
+                className="text-dark"
+              >{t`Thanks for using Metabase!`}</h2>
               <div className="pt2">
                 <h3 className="text-dark mb1">
                   {t`You're on version`} {tag}
@@ -126,16 +141,18 @@ export default class ProfileLink extends Component {
                 )}
               </div>
             </div>
-            <div
-              style={{ borderWidth: "2px" }}
-              className="p2 h5 text-centered text-medium border-top"
-            >
-              <span className="block">
-                <span className="text-bold">Metabase</span>{" "}
-                {t`is a Trademark of`} Metabase, Inc
-              </span>
-              <span>{t`and is built with care in San Francisco, CA`}</span>
-            </div>
+            {showTrademark && (
+              <div
+                style={{ borderWidth: "2px" }}
+                className="p2 h5 text-centered text-medium border-top"
+              >
+                <span className="block">
+                  <span className="text-bold">Metabase</span>{" "}
+                  {t`is a Trademark of`} Metabase, Inc
+                </span>
+                <span>{t`and is built with care in San Francisco, CA`}</span>
+              </div>
+            )}
           </Modal>
         ) : null}
       </Box>

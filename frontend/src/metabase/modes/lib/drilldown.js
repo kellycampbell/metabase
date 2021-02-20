@@ -7,13 +7,13 @@ import {
   isDate,
   isAny,
 } from "metabase/lib/schema_metadata";
-import { getFieldRefFromColumn } from "./actions";
+import { fieldRefForColumn } from "metabase/lib/dataset";
 
 import _ from "underscore";
 import { getIn } from "icepick";
 
 // Helpers for defining drill-down progressions
-const CategoryDrillDown = type => [field => isa(field.special_type, type)];
+const CategoryDrillDown = type => [field => isa(field.semantic_type, type)];
 const DateTimeDrillDown = unit => [["datetime-field", isDate, unit]];
 
 const LatLonDrillDown = (binningStrategy, binWidth) => [
@@ -166,12 +166,13 @@ function breakoutForBreakoutTemplate(breakoutTemplate, dimensions, table) {
     : breakoutTemplate;
   const dimensionColumns = dimensions.map(d => d.column);
   const field =
-    _.find(dimensionColumns, fieldFilter) || _.find(table.fields, fieldFilter);
+    dimensionColumns.find(fieldFilter) ||
+    (table && table.fields.find(fieldFilter));
   if (!field) {
     return null;
   }
 
-  let fieldRef = getFieldRefFromColumn(dimensions[0].column);
+  let fieldRef = fieldRefForColumn(dimensions[0].column);
 
   if (Array.isArray(fieldRef) && fieldRef[0] === "field-id") {
     fieldRef = ["field-id", field.id];
@@ -253,6 +254,6 @@ function columnToBreakout(column) {
 // returns the table metadata for a dimension
 function tableForDimensions(dimensions, metadata) {
   const fieldId = getIn(dimensions, [0, "column", "id"]);
-  const field = metadata.fields[fieldId];
+  const field = metadata.field(fieldId);
   return field && field.table;
 }

@@ -4,8 +4,9 @@ import d3 from "d3";
 import _ from "underscore";
 
 import { color } from "metabase/lib/colors";
-import { clipPathReference } from "metabase/lib/dom";
+import { clipPathReference, moveToFront } from "metabase/lib/dom";
 import { adjustYAxisTicksIfNeeded } from "./apply_axis";
+import { onRenderValueLabels } from "./chart_values";
 
 const X_LABEL_MIN_SPACING = 2; // minimum space we want to leave between labels
 const X_LABEL_ROTATE_90_THRESHOLD = 24; // tick width breakpoint for switching from 45° to 90°
@@ -16,13 +17,6 @@ const X_LABEL_DISABLED_SPACING = 6; // spacing to use if the x-axis is disabled 
 // +-------------------------------------------------------------------------------------------------------------------+
 // |                                                  HELPER FUNCTIONS                                                 |
 // +-------------------------------------------------------------------------------------------------------------------+
-
-// moves an element on top of all siblings
-function moveToTop(element) {
-  if (element) {
-    element.parentNode.appendChild(element);
-  }
-}
 
 // assumes elements are in order from left to right, skips those that aren't
 function getMinElementSpacing(elements) {
@@ -57,7 +51,7 @@ function onRenderRemoveClipPath(chart) {
 function onRenderMoveContentToTop(chart) {
   for (const element of chart.selectAll(".sub, .chart-body")[0]) {
     // move chart content on top of axis (z-index doesn't work on SVG):
-    moveToTop(element);
+    moveToFront(element);
   }
 }
 
@@ -70,13 +64,13 @@ function onRenderReorderCharts(chart) {
     // move area charts first
     for (const [index, display] of displayTypes.entries()) {
       if (display === "area") {
-        moveToTop(chart.select(`.sub._${index}`)[0][0]);
+        moveToFront(chart.select(`.sub._${index}`)[0][0]);
       }
     }
     // move line charts second
     for (const [index, display] of displayTypes.entries()) {
       if (display === "line") {
-        moveToTop(chart.select(`.sub._${index}`)[0][0]);
+        moveToFront(chart.select(`.sub._${index}`)[0][0]);
       }
     }
   }
@@ -378,7 +372,18 @@ function onRenderAddExtraClickHandlers(chart) {
 }
 
 // the various steps that get called
-function onRender(chart, onGoalHover, isSplitAxis, isStacked) {
+function onRender(
+  chart,
+  {
+    onGoalHover,
+    isSplitAxis,
+    xInterval,
+    yAxisSplit,
+    isStacked,
+    formatYValue,
+    datas,
+  },
+) {
   onRenderRemoveClipPath(chart);
   onRenderMoveContentToTop(chart);
   onRenderReorderCharts(chart);
@@ -387,6 +392,7 @@ function onRender(chart, onGoalHover, isSplitAxis, isStacked) {
   onRenderEnableDots(chart);
   onRenderVoronoiHover(chart);
   onRenderCleanupGoalAndTrend(chart, onGoalHover, isSplitAxis); // do this before hiding x-axis
+  onRenderValueLabels(chart, { formatYValue, xInterval, yAxisSplit, datas });
   onRenderHideDisabledLabels(chart);
   onRenderHideDisabledAxis(chart);
   onRenderHideBadAxis(chart);
@@ -610,15 +616,8 @@ function beforeRender(chart) {
 // +-------------------------------------------------------------------------------------------------------------------+
 
 /// once chart has rendered and we can access the SVG, do customizations to axis labels / etc that you can't do through dc.js
-export default function lineAndBarOnRender(
-  chart,
-  onGoalHover,
-  isSplitAxis,
-  isStacked,
-) {
+export default function lineAndBarOnRender(chart, args) {
   beforeRender(chart);
-  chart.on("renderlet.on-render", () =>
-    onRender(chart, onGoalHover, isSplitAxis, isStacked),
-  );
+  chart.on("renderlet.on-render", () => onRender(chart, args));
   chart.render();
 }

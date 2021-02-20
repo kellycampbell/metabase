@@ -1,24 +1,20 @@
 (ns metabase.metabot.command
   "Implementations of various MetaBot commands."
-  (:require [clojure
-             [edn :as edn]
-             [string :as str]]
+  (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]
-            [metabase
-             [pulse :as pulse]
-             [util :as u]]
             [metabase.api.common :refer [*current-user-permissions-set* read-check]]
             [metabase.metabot.slack :as metabot.slack]
-            [metabase.models
-             [card :refer [Card]]
-             [collection :as collection]
-             [interface :as mi]
-             [permissions :refer [Permissions]]
-             [permissions-group :as perms-group]]
-            [metabase.util
-             [i18n :refer [deferred-tru trs tru]]
-             [urls :as urls]]
+            [metabase.models.card :refer [Card]]
+            [metabase.models.collection :as collection]
+            [metabase.models.interface :as mi]
+            [metabase.models.permissions :refer [Permissions]]
+            [metabase.models.permissions-group :as perms-group]
+            [metabase.pulse :as pulse]
+            [metabase.util :as u]
+            [metabase.util.i18n :refer [deferred-tru trs tru]]
+            [metabase.util.urls :as urls]
             [toucan.db :as db]))
 
 ;;; ----------------------------------------------------- Perms ------------------------------------------------------
@@ -83,7 +79,7 @@
   (str
    (tru "I don''t know how to `{0}`." command-name)
    " "
-   (command :help)))
+   (command "help")))
 
 
 (defmulti ^:private unlisted?
@@ -107,27 +103,22 @@
 
 (defn- list-cards []
   (filter-metabot-readable
-   (let [collection-ids                  (metabot-visible-collection-ids)
-         root-collection-perms?          (contains? collection-ids nil)
-         other-visible-collection-ids    (filter some? collection-ids)
-
-         root-collection-filter-clause   (when root-collection-perms?
-                                           [:= :collection_id nil])
-         other-collections-filter-clause (when (seq other-visible-collection-ids)
-                                           [:in :collection_id other-visible-collection-ids])]
-     (db/select [Card :id :name :dataset_query :collection_id]
-       {:order-by [[:id :desc]]
-        :limit    20
-        :where    [:and
-                   [:= :archived false]
-                   (collection/visible-collection-ids->honeysql-filter-clause
-                    (metabot-visible-collection-ids))]}))))
+   (db/select [Card :id :name :dataset_query :collection_id]
+     {:order-by [[:id :desc]]
+      :limit    20
+      :where    [:and
+                 [:= :archived false]
+                 (collection/visible-collection-ids->honeysql-filter-clause
+                  (metabot-visible-collection-ids))]})))
 
 (defmethod command :list [& _]
-  (let [cards (list-cards)]
-    (str (deferred-tru "Here''s your {0} most recent cards:" (count cards))
-         "\n"
-          (format-cards-list cards))))
+  (let [cards (list-cards)
+        card-count (count cards)]
+    (if (zero? card-count)
+      (tru "You don''t have any cards yet.")
+      (str (deferred-tru "Here are your {0} most recent cards:" card-count)
+           "\n"
+           (format-cards-list cards)))))
 
 
 ;;; ------------------------------------------------------ show ------------------------------------------------------
@@ -171,18 +162,18 @@
      (when-not card-id
        (throw (Exception. (tru "Card {0} not found." card-id-or-name))))
      (with-metabot-permissions
-       (read-check Card card-id))
-     (metabot.slack/async
-       (let [attachments (pulse/create-and-upload-slack-attachments!
-                          (pulse/create-slack-attachment-data
-                           [(pulse/execute-card {} card-id, :context :metabot)]))]
-         (metabot.slack/post-chat-message! nil attachments)))
+       (read-check Card card-id)
+       (metabot.slack/async
+         (let [attachments (pulse/create-and-upload-slack-attachments!
+                            (pulse/create-slack-attachment-data
+                             [(pulse/execute-card {} card-id, :context :metabot)]))]
+           (metabot.slack/post-chat-message! nil attachments))))
      (tru "Ok, just a second...")))
 
   ;; If the card name comes without spaces, e.g. (show 'my 'wacky 'card) turn it into a string an recur: (show "my
   ;; wacky card")
   ([_ word & more]
-   (command :show (str/join " " (cons word more)))))
+   (command "show" (str/join " " (cons word more)))))
 
 
 ;;; ------------------------------------------------------ help ------------------------------------------------------
@@ -204,9 +195,9 @@
 
 (def ^:private kanye-quotes
   (delay
-   (log/debug (trs "Loading Kanye quotes..."))
-   (when-let [data (slurp (io/reader (io/resource "kanye-quotes.edn")))]
-     (edn/read-string data))))
+    (log/debug (trs "Loading Kanye quotes..."))
+    (when-let [url (io/resource "kanye-quotes.edn")]
+      (edn/read-string (slurp url)))))
 
 (defmethod command :kanye [& _]
   (str ":kanye:\n> " (rand-nth @kanye-quotes)))

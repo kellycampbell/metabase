@@ -5,9 +5,8 @@
             [honeysql.core :as hsql]
             [metabase.driver.sql.query-processor :as sql.qp]
             [metabase.util :as u]
-            [metabase.util
-             [honeysql-extensions :as hx]
-             [i18n :refer [trs]]]
+            [metabase.util.honeysql-extensions :as hx]
+            [metabase.util.i18n :refer [trs]]
             [schema.core :as s])
   (:import metabase.util.honeysql_extensions.Identifier))
 
@@ -100,3 +99,27 @@
         ;; otherwise if we haven't seen it record it as seen and move on to the next column
         :else
         (recur (conj already-seen alias) (conj acc [col alias]) more)))))
+
+(defn escape-sql
+  "Escape single quotes in a SQL string. `escape-style` is either `:ansi` (escape a single quote with two single quotes)
+  or `:backslashes` (escape a single quote with a backslash).
+
+    (escape-sql \"Tito's Tacos\" :ansi)        ; -> \"Tito''s Tacos\"
+    (escape-sql \"Tito's Tacos\" :backslashes) ; -> \"Tito\\'s Tacos\"
+
+  !!!! VERY IMPORTANT !!!!
+
+  DON'T RELY ON THIS FOR SANITIZING USER INPUT BEFORE RUNNING QUERIES!
+
+  For user input, *ALWAYS* pass parameters separately (e.g. using `?` in the SQL) where supported, or if unsupported,
+  encode the strings as hex and splice in something along the lines of `utf8_string(hex_decode(<hex-string>))`
+  instead. This is intended only for escaping trusted strings, or for generating the SQL equivalent version of an MBQL
+  query for debugging purposes or powering the 'convert to SQL' feature."
+  {:arglists '([s :ansi] [s :backslashes])}
+  ^String [^String s escape-style]
+  (when s
+    (case escape-style
+      :ansi        (str/replace s "'" "''")
+      :backslashes (-> s
+                       (str/replace "\\" "\\\\")
+                       (str/replace "'" "\\'")))))

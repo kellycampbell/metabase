@@ -1,10 +1,11 @@
 import React from "react";
 import PropTypes from "prop-types";
-import sys from "system-components";
 
 import Icon from "metabase/components/Icon";
 import cx from "classnames";
 import _ from "underscore";
+import styled from "styled-components";
+import { color, space } from "styled-system";
 
 const BUTTON_VARIANTS = [
   "small",
@@ -41,7 +42,9 @@ const BaseButton = ({
   return (
     <button
       {..._.omit(props, ...BUTTON_VARIANTS)}
-      className={cx("Button", className, "flex-no-shrink", variantClasses)}
+      className={cx("Button", className, "flex-no-shrink", variantClasses, {
+        p1: !children,
+      })}
     >
       <div
         className={cx("flex layout-centered", { "flex-column": iconVertical })}
@@ -91,13 +94,10 @@ BaseButton.propTypes = {
   borderless: PropTypes.bool,
 };
 
-const Button = sys(
-  {
-    is: BaseButton,
-  },
-  "space",
-  "color",
-);
+const Button = styled(BaseButton)`
+  ${color};
+  ${space};
+`;
 
 Button.displayName = "Button";
 

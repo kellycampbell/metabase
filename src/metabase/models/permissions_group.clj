@@ -8,48 +8,52 @@
   however, set permissions for them. "
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [metabase.db.connection :as mdb.connection]
             [metabase.models.setting :as setting]
             [metabase.plugins.classloader :as classloader]
             [metabase.util :as u]
             [metabase.util.i18n :as ui18n :refer [trs tru]]
-            [toucan
-             [db :as db]
-             [models :as models]]))
+            [toucan.db :as db]
+            [toucan.models :as models]))
 
 (models/defmodel PermissionsGroup :permissions_group)
 
 
 ;;; -------------------------------------------- Magic Groups Getter Fns ---------------------------------------------
 
-(defn- group-fetch-fn [group-name]
-  (memoize (fn []
+(defn- get-or-create-magic-group! [group-name]
+  ;; these are memoized by the application DB in case it gets swapped out/mocked
+  (let [f (memoize
+           (fn [_ _]
              (or (db/select-one PermissionsGroup
                    :name group-name)
                  (u/prog1 (db/insert! PermissionsGroup
                             :name group-name)
                    (log/info (u/format-color 'green (trs "Created magic permissions group ''{0}'' (ID = {1})"
-                                                         group-name (:id <>)))))))))
+                                                         group-name (:id <>))))))))]
+    (fn []
+      (f (mdb.connection/db-type) (mdb.connection/jdbc-spec)))))
 
 (def ^{:arglists '([])} ^metabase.models.permissions_group.PermissionsGroupInstance
   all-users
   "Fetch the `All Users` permissions group, creating it if needed."
-  (group-fetch-fn "All Users"))
+  (get-or-create-magic-group! "All Users"))
 
 (def ^{:arglists '([])} ^metabase.models.permissions_group.PermissionsGroupInstance
   admin
   "Fetch the `Administators` permissions group, creating it if needed."
-  (group-fetch-fn "Administrators"))
+  (get-or-create-magic-group! "Administrators"))
 
 (def ^{:arglists '([])} ^metabase.models.permissions_group.PermissionsGroupInstance
   metabot
   "Fetch the `MetaBot` permissions group, creating it if needed."
-  (group-fetch-fn "MetaBot"))
+  (get-or-create-magic-group! "MetaBot"))
 
 
 ;;; --------------------------------------------------- Validation ---------------------------------------------------
 
 (defn exists-with-name?
-  "Does a `PermissionsGroup` with GROUP-NAME exist in the DB? (case-insensitive)"
+  "Does a `PermissionsGroup` with `group-name` exist in the DB? (case-insensitive)"
   ^Boolean [group-name]
   {:pre [((some-fn keyword? string?) group-name)]}
   (db/exists? PermissionsGroup
@@ -80,8 +84,6 @@
 
 (defn- pre-delete [{id :id, :as group}]
   (check-not-magic-group group)
-  (db/delete! 'Permissions                 :group_id id)
-  (db/delete! 'PermissionsGroupMembership  :group_id id)
   ;; Remove from LDAP mappings
   (classloader/require 'metabase.integrations.ldap)
   (setting/set-json! :ldap-group-mappings

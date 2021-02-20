@@ -1,15 +1,13 @@
 (ns metabase.models.task-history
   (:require [clojure.tools.logging :as log]
+            [java-time :as t]
             [metabase.models.interface :as i]
             [metabase.util :as u]
-            [metabase.util
-             [date :as du]
-             [i18n :refer [trs]]
-             [schema :as su]]
+            [metabase.util.i18n :refer [trs]]
+            [metabase.util.schema :as su]
             [schema.core :as s]
-            [toucan
-             [db :as db]
-             [models :as models]]))
+            [toucan.db :as db]
+            [toucan.models :as models]))
 
 (models/defmodel TaskHistory :task_history)
 
@@ -63,8 +61,8 @@
     (try
       (db/insert! TaskHistory
         (assoc info
-          :started_at (du/->Timestamp start-time-ms)
-          :ended_at   (du/->Timestamp end-time-ms)
+          :started_at (t/instant start-time-ms)
+          :ended_at   (t/instant end-time-ms)
           :duration   duration-ms))
       (catch Throwable e
         (log/warn e (trs "Error saving task history"))))))

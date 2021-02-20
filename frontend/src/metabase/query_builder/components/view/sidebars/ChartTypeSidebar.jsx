@@ -11,9 +11,9 @@ import { color, lighten } from "metabase/lib/colors";
 import visualizations from "metabase/visualizations";
 
 const FIXED_LAYOUT = [
-  ["line", "bar", "combo", "area", "row"],
+  ["line", "bar", "combo", "area", "row", "waterfall"],
   ["scatter", "pie", "funnel", "smartscalar", "progress", "gauge"],
-  ["scalar", "table", "map"],
+  ["scalar", "table", "pivot", "map"],
 ];
 const FIXED_TYPES = new Set(_.flatten(FIXED_LAYOUT));
 
@@ -57,12 +57,13 @@ const ChartTypeSidebar = ({
                     result &&
                     result.data &&
                     visualization.isSensible &&
-                    visualization.isSensible(result.data)
+                    visualization.isSensible(result.data, props.query)
                   }
                   onClick={() => {
                     question
-                      .setSelectedDisplay(type)
-                      .update(null, { reload: false });
+                      .setDisplay(type)
+                      .lockDisplay(true) // prevent viz auto-selection
+                      .update(null, { reload: false, shouldUpdateUrl: true });
                     onOpenChartSettings({ section: t`Data` });
                     setUIControls({ isShowingRawTable: false });
                   }}

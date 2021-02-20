@@ -2,17 +2,15 @@
   (:require [clojure.core.memoize :as memoize]
             [clojure.string :as str]
             [medley.core :as m]
-            [metabase.models
-             [dimension :refer [Dimension]]
-             [field-values :as fv :refer [FieldValues]]
-             [humanization :as humanization]
-             [interface :as i]
-             [permissions :as perms]]
+            [metabase.models.dimension :refer [Dimension]]
+            [metabase.models.field-values :as fv :refer [FieldValues]]
+            [metabase.models.humanization :as humanization]
+            [metabase.models.interface :as i]
+            [metabase.models.permissions :as perms]
             [metabase.util :as u]
-            [toucan
-             [db :as db]
-             [hydrate :refer [hydrate]]
-             [models :as models]]))
+            [toucan.db :as db]
+            [toucan.hydrate :refer [hydrate]]
+            [toucan.models :as models]))
 
 ;;; ------------------------------------------------- Type Mappings --------------------------------------------------
 
@@ -60,13 +58,13 @@
 
 (models/defmodel Field :metabase_field)
 
-(defn- check-valid-types [{base-type :base_type, special-type :special_type}]
+(defn- check-valid-types [{base-type :base_type, semantic-type :semantic_type}]
   (when base-type
     (assert (isa? (keyword base-type) :type/*)
       (str "Invalid base type: " base-type)))
-  (when special-type
-    (assert (isa? (keyword special-type) :type/*)
-      (str "Invalid special type: " special-type))))
+  (when semantic-type
+    (assert (isa? (keyword semantic-type) :type/*)
+      (str "Invalid semantic type: " semantic-type))))
 
 (defn- pre-insert [field]
   (check-valid-types field)
@@ -77,12 +75,6 @@
   (u/prog1 field
     (check-valid-types field)))
 
-(defn- pre-delete [{:keys [id]}]
-  (db/delete! Field :parent_id id)
-  (db/delete! 'FieldValues :field_id id)
-  (db/delete! 'MetricImportantField :field_id id))
-
-
 ;;; Field permissions
 ;; There are several API endpoints where large instances can return many thousands of Fields. Normally Fields require
 ;; a DB call to fetch information about their Table, because a Field's permissions set is the same as its parent
@@ -92,17 +84,17 @@
 ;;     number of DB calls that are made. See discussion below for more details.
 
 (def ^:private ^{:arglists '([table-id])} perms-objects-set*
-  "Cached lookup for the permissions set for a table with TABLE-ID. This is done so a single API call or other unit of
-   computation doesn't accidentally end up in a situation where thousands of DB calls end up being made to calculate
-   permissions for a large number of Fields. Thus, the cache only persists for 5 seconds.
+  "Cached lookup for the permissions set for a table with `table-id`. This is done so a single API call or other unit of
+  computation doesn't accidentally end up in a situation where thousands of DB calls end up being made to calculate
+  permissions for a large number of Fields. Thus, the cache only persists for 5 seconds.
 
-   Of course, no DB lookups are needed at all if the Field already has a hydrated Table. However, mistakes are
-   possible, and I did not extensively audit every single code pathway that uses sequences of Fields and permissions,
-   so this caching is added as a failsafe in case Table hydration wasn't done.
+  Of course, no DB lookups are needed at all if the Field already has a hydrated Table. However, mistakes are
+  possible, and I did not extensively audit every single code pathway that uses sequences of Fields and permissions,
+  so this caching is added as a failsafe in case Table hydration wasn't done.
 
-   Please note this only caches one entry PER TABLE ID. Thus, even a million Tables (which is more than I hope we ever
-   see), would require only a few megs of RAM, and again only if every single Table was looked up in a span of 5
-   seconds."
+  Please note this only caches one entry PER TABLE ID. Thus, even a million Tables (which is more than I hope we ever
+  see), would require only a few megs of RAM, and again only if every single Table was looked up in a span of 5
+  seconds."
   (memoize/ttl
    (fn [table-id]
      (let [{schema :schema, database-id :db_id} (db/select-one ['Table :schema :db_id] :id table-id)]
@@ -120,44 +112,41 @@
     ;; otherwise we need to fetch additional info about Field's Table. This is cached for 5 seconds (see above)
     (perms-objects-set* table-id)))
 
-(defn- maybe-parse-special-numeric-values [maybe-double-value]
+(defn- maybe-parse-semantic-numeric-values [maybe-double-value]
   (if (string? maybe-double-value)
     (u/ignore-exceptions (Double/parseDouble maybe-double-value))
     maybe-double-value))
 
-(defn- update-special-numeric-values
+(defn- update-semantic-numeric-values
   "When fingerprinting decimal columns, NaN and Infinity values are possible. Serializing these values to JSON just
   yields a string, not a value double. This function will attempt to coerce any of those values to double objects"
   [fingerprint]
-  (u/update-in-when fingerprint [:type :type/Number]
-                    (partial m/map-vals maybe-parse-special-numeric-values)))
+  (m/update-existing-in fingerprint [:type :type/Number]
+                        (partial m/map-vals maybe-parse-semantic-numeric-values)))
 
 (models/add-type! :json-for-fingerprints
   :in  i/json-in
-  :out (comp update-special-numeric-values i/json-out-with-keywordization))
+  :out (comp update-semantic-numeric-values i/json-out-with-keywordization))
 
 
 (u/strict-extend (class Field)
   models/IModel
   (merge models/IModelDefaults
          {:hydration-keys (constantly [:destination :field :origin :human_readable_field])
-          :types          (constantly {:base_type        :keyword
-                                       :special_type     :keyword
-                                       :visibility_type  :keyword
-                                       :description      :clob
-                                       :database_type    :clob
-                                       :has_field_values :keyword
-                                       :fingerprint      :json-for-fingerprints
-                                       :settings         :json})
+          :types          (constantly {:base_type         :keyword
+                                       :semantic_type     :keyword
+                                       :visibility_type   :keyword
+                                       :has_field_values  :keyword
+                                       :fingerprint       :json-for-fingerprints
+                                       :settings          :json})
           :properties     (constantly {:timestamped? true})
           :pre-insert     pre-insert
-          :pre-update     pre-update
-          :pre-delete     pre-delete})
+          :pre-update     pre-update})
 
   i/IObjectPermissions
   (merge i/IObjectPermissionsDefaults
          {:perms-objects-set perms-objects-set
-          :can-read?         (partial i/current-user-has-full-permissions? :read)
+          :can-read?         (partial i/current-user-has-partial-permissions? :read)
           :can-write?        i/superuser?}))
 
 
@@ -165,13 +154,13 @@
 
 (defn target
   "Return the FK target `Field` that this `Field` points to."
-  [{:keys [special_type fk_target_field_id]}]
-  (when (and (isa? special_type :type/FK)
+  [{:keys [semantic_type fk_target_field_id]}]
+  (when (and (isa? semantic_type :type/FK)
              fk_target_field_id)
     (Field fk_target_field_id)))
 
 (defn values
-  "Return the `FieldValues` associated with this FIELD."
+  "Return the `FieldValues` associated with this `field`."
   [{:keys [id]}]
   (db/select [FieldValues :field_id :values], :field_id id))
 
@@ -187,7 +176,7 @@
                           (db/select model :field_id [:in field-ids])))))
 
 (defn with-values
-  "Efficiently hydrate the `FieldValues` for a collection of FIELDS."
+  "Efficiently hydrate the `FieldValues` for a collection of `fields`."
   {:batched-hydrate :values}
   [fields]
   (let [id->field-values (select-field-id->instance fields FieldValues)]
@@ -195,7 +184,7 @@
       (assoc field :values (get id->field-values (:id field) [])))))
 
 (defn with-normal-values
-  "Efficiently hydrate the `FieldValues` for visibility_type normal FIELDS."
+  "Efficiently hydrate the `FieldValues` for visibility_type normal `fields`."
   {:batched-hydrate :normal_values}
   [fields]
   (let [id->field-values (select-field-id->instance (filter fv/field-should-have-field-values? fields)
@@ -204,7 +193,7 @@
       (assoc field :values (get id->field-values (:id field) [])))))
 
 (defn with-dimensions
-  "Efficiently hydrate the `Dimension` for a collection of FIELDS."
+  "Efficiently hydrate the `Dimension` for a collection of `fields`."
   {:batched-hydrate :dimensions}
   [fields]
   ;; TODO - it looks like we obviously thought this code would return *all* of the Dimensions for a Field, not just
@@ -258,11 +247,11 @@
     (dissoc field :table)))
 
 (defn with-targets
-  "Efficiently hydrate the FK target fields for a collection of FIELDS."
+  "Efficiently hydrate the FK target fields for a collection of `fields`."
   {:batched-hydrate :target}
   [fields]
   (let [target-field-ids (set (for [field fields
-                                    :when (and (isa? (:special_type field) :type/FK)
+                                    :when (and (isa? (:semantic_type field) :type/FK)
                                                (:fk_target_field_id field))]
                                 (:fk_target_field_id field)))
         id->target-field (u/key-by :id (when (seq target-field-ids)
@@ -273,7 +262,7 @@
 
 
 (defn qualified-name-components
-  "Return the pieces that represent a path to FIELD, of the form `[table-name parent-fields-name* field-name]`."
+  "Return the pieces that represent a path to `field`, of the form `[table-name parent-fields-name* field-name]`."
   [{field-name :name, table-id :table_id, parent-id :parent_id}]
   (conj (vec (if-let [parent (Field parent-id)]
                (qualified-name-components parent)
@@ -284,9 +273,23 @@
         field-name))
 
 (defn qualified-name
-  "Return a combined qualified name for FIELD, e.g. `table_name.parent_field_name.field_name`."
+  "Return a combined qualified name for `field`, e.g. `table_name.parent_field_name.field_name`."
   [field]
   (str/join \. (qualified-name-components field)))
+
+(def ^{:arglists '([field-id])} field-id->table-id
+  "Return the ID of the Table this Field belongs to."
+  (memoize
+   (fn [field-id]
+     {:pre [(integer? field-id)]}
+     (db/select-one-field :table_id Field, :id field-id))))
+
+(defn field-id->database-id
+  "Return the ID of the Database this Field belongs to."
+  [field-id]
+  {:pre [(integer? field-id)]}
+  (let [table-id (field-id->table-id field-id)]
+    ((requiring-resolve 'metabase.models.table/table-id->database-id) table-id)))
 
 (defn table
   "Return the `Table` associated with this `Field`."
@@ -296,6 +299,6 @@
 
 (defn unix-timestamp?
   "Is field a UNIX timestamp?"
-  [{:keys [base_type special_type]}]
+  [{:keys [base_type semantic_type]}]
   (and (isa? base_type :type/Integer)
-       (isa? special_type :type/Temporal)))
+       (isa? semantic_type :type/Temporal)))

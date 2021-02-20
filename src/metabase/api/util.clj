@@ -3,13 +3,11 @@
   page tasks."
   (:require [compojure.core :refer [GET POST]]
             [crypto.random :as crypto-random]
-            [metabase
-             [logger :as logger]
-             [troubleshooting :as troubleshooting]]
             [metabase.api.common :as api]
-            [metabase.util
-             [schema :as su]
-             [stats :as stats]]))
+            [metabase.logger :as logger]
+            [metabase.troubleshooting :as troubleshooting]
+            [metabase.util.schema :as su]
+            [metabase.util.stats :as stats]))
 
 (api/defendpoint POST "/password_check"
   "Endpoint that checks if the supplied password meets the currently configured password complexity rules."
@@ -37,9 +35,10 @@
   {:token (crypto-random/hex 32)})
 
 (api/defendpoint GET "/bug_report_details"
+  "Returns version and system information relevant to filing a bug report against Metabase."
   []
   (api/check-superuser)
-  {:system-info (troubleshooting/system-info)
+  {:system-info   (troubleshooting/system-info)
    :metabase-info (troubleshooting/metabase-info)})
 
 (api/define-routes)

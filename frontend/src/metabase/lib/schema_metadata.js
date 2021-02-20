@@ -18,6 +18,7 @@ export const TEMPORAL = "TEMPORAL";
 export const LOCATION = "LOCATION";
 export const COORDINATE = "COORDINATE";
 export const FOREIGN_KEY = "FOREIGN_KEY";
+export const PRIMARY_KEY = "PRIMARY_KEY";
 
 // other types used for various purporses
 export const ENTITY = "ENTITY";
@@ -32,15 +33,15 @@ export const UNKNOWN = "UNKNOWN";
 const TYPES = {
   [TEMPORAL]: {
     base: [TYPE.Temporal],
-    special: [TYPE.Temporal],
+    semantic: [TYPE.Temporal],
   },
   [NUMBER]: {
     base: [TYPE.Number],
-    special: [TYPE.Number],
+    semantic: [TYPE.Number],
   },
   [STRING]: {
     base: [TYPE.Text],
-    special: [TYPE.Text],
+    semantic: [TYPE.Text],
   },
   [STRING_LIKE]: {
     base: [TYPE.TextLike],
@@ -49,16 +50,19 @@ const TYPES = {
     base: [TYPE.Boolean],
   },
   [COORDINATE]: {
-    special: [TYPE.Coordinate],
+    semantic: [TYPE.Coordinate],
   },
   [LOCATION]: {
-    special: [TYPE.Address],
+    semantic: [TYPE.Address],
   },
   [ENTITY]: {
-    special: [TYPE.FK, TYPE.PK, TYPE.Name],
+    semantic: [TYPE.FK, TYPE.PK, TYPE.Name],
   },
   [FOREIGN_KEY]: {
-    special: [TYPE.FK],
+    semantic: [TYPE.FK],
+  },
+  [PRIMARY_KEY]: {
+    semantic: [TYPE.PK],
   },
   [SUMMABLE]: {
     include: [NUMBER],
@@ -66,7 +70,7 @@ const TYPES = {
   },
   [CATEGORY]: {
     base: [TYPE.Boolean],
-    special: [TYPE.Category],
+    semantic: [TYPE.Category],
     include: [LOCATION],
   },
   // NOTE: this is defunct right now.  see definition of isDimension below.
@@ -82,7 +86,7 @@ export function isFieldType(type, field) {
 
   const typeDefinition = TYPES[type];
   // check to see if it belongs to any of the field types:
-  for (const prop of ["base", "special"]) {
+  for (const prop of ["base", "semantic"]) {
     const allowedTypes = typeDefinition[prop];
     if (!allowedTypes) {
       continue;
@@ -119,6 +123,7 @@ export function getFieldType(field) {
     LOCATION,
     COORDINATE,
     FOREIGN_KEY,
+    PRIMARY_KEY,
     NUMBER,
     STRING,
     STRING_LIKE,
@@ -143,52 +148,55 @@ export const isDimension = col =>
 export const isMetric = col =>
   col && col.source !== "breakout" && isSummable(col);
 
-export const isFK = field => field && isTypeFK(field.special_type);
-export const isPK = field => field && isTypePK(field.special_type);
+export const isFK = field => field && isTypeFK(field.semantic_type);
+export const isPK = field => field && isTypePK(field.semantic_type);
 export const isEntityName = field =>
-  isa(field && field.special_type, TYPE.Name);
+  field && isa(field.semantic_type, TYPE.Name);
 
 export const isAny = col => true;
 
 export const isNumericBaseType = field =>
-  isa(field && field.base_type, TYPE.Number);
+  field && isa(field.base_type, TYPE.Number);
 
 // ZipCode, ID, etc derive from Number but should not be formatted as numbers
 export const isNumber = field =>
   field &&
   isNumericBaseType(field) &&
-  (field.special_type == null || isa(field.special_type, TYPE.Number));
+  (field.semantic_type == null || isa(field.semantic_type, TYPE.Number));
 
 export const isBinnedNumber = field => isNumber(field) && !!field.binning_info;
 
-export const isTime = field => isa(field && field.base_type, TYPE.Time);
+export const isTime = field => field && isa(field.base_type, TYPE.Time);
 
 export const isAddress = field =>
-  isa(field && field.special_type, TYPE.Address);
-export const isState = field => isa(field && field.special_type, TYPE.State);
+  field && isa(field.semantic_type, TYPE.Address);
+export const isCity = field => field && isa(field.semantic_type, TYPE.City);
+export const isState = field => field && isa(field.semantic_type, TYPE.State);
+export const isZipCode = field =>
+  field && isa(field.semantic_type, TYPE.ZipCode);
 export const isCountry = field =>
-  isa(field && field.special_type, TYPE.Country);
+  field && isa(field.semantic_type, TYPE.Country);
 export const isCoordinate = field =>
-  isa(field && field.special_type, TYPE.Coordinate);
+  field && isa(field.semantic_type, TYPE.Coordinate);
 export const isLatitude = field =>
-  isa(field && field.special_type, TYPE.Latitude);
+  field && isa(field.semantic_type, TYPE.Latitude);
 export const isLongitude = field =>
-  isa(field && field.special_type, TYPE.Longitude);
+  field && isa(field.semantic_type, TYPE.Longitude);
 
 export const isCurrency = field =>
-  isa(field && field.special_type, TYPE.Currency);
+  field && isa(field.semantic_type, TYPE.Currency);
 
 export const isDescription = field =>
-  isa(field && field.special_type, TYPE.Description);
+  field && isa(field.semantic_type, TYPE.Description);
 
 export const isID = field => isFK(field) || isPK(field);
 
-export const isURL = field => isa(field && field.special_type, TYPE.URL);
-export const isEmail = field => isa(field && field.special_type, TYPE.Email);
+export const isURL = field => field && isa(field.semantic_type, TYPE.URL);
+export const isEmail = field => field && isa(field.semantic_type, TYPE.Email);
 export const isAvatarURL = field =>
-  isa(field && field.special_type, TYPE.AvatarURL);
+  field && isa(field.semantic_type, TYPE.AvatarURL);
 export const isImageURL = field =>
-  isa(field && field.special_type, TYPE.ImageURL);
+  field && isa(field.semantic_type, TYPE.ImageURL);
 
 // filter operator argument constructors:
 
@@ -250,7 +258,7 @@ function equivalentArgument(field, table) {
 
 function longitudeFieldSelectArgument(field, table) {
   const values = table.fields
-    .filter(field => isa(field.special_type, TYPE.Longitude))
+    .filter(field => isa(field.semantic_type, TYPE.Longitude))
     .map(field => ({
       key: field.id,
       name: field.display_name,
@@ -274,7 +282,8 @@ const CASE_SENSITIVE_OPTION = {
   },
 };
 
-const FILTER_OPERATORS = {
+// each of these has an implicit field argument, followed by 0 or more additional arguments
+const FIELD_FILTER_OPERATORS = {
   "=": {
     validArgumentsFilters: [equivalentArgument],
     multi: true,
@@ -282,6 +291,12 @@ const FILTER_OPERATORS = {
   "!=": {
     validArgumentsFilters: [equivalentArgument],
     multi: true,
+  },
+  "is-empty": {
+    validArgumentsFilters: [],
+  },
+  "not-empty": {
+    validArgumentsFilters: [],
   },
   "is-null": {
     validArgumentsFilters: [],
@@ -318,10 +333,10 @@ const FILTER_OPERATORS = {
     ],
     formatOptions: [
       { hide: true },
-      { column: { special_type: TYPE.Latitude }, compact: true },
-      { column: { special_type: TYPE.Longitude }, compact: true },
-      { column: { special_type: TYPE.Latitude }, compact: true },
-      { column: { special_type: TYPE.Longitude }, compact: true },
+      { column: { semantic_type: TYPE.Latitude }, compact: true },
+      { column: { semantic_type: TYPE.Longitude }, compact: true },
+      { column: { semantic_type: TYPE.Latitude }, compact: true },
+      { column: { semantic_type: TYPE.Longitude }, compact: true },
     ],
   },
   between: {
@@ -374,16 +389,20 @@ const FILTER_OPERATORS_BY_TYPE_ORDERED = {
     { name: "!=", verboseName: t`Is not` },
     { name: "contains", verboseName: t`Contains` },
     { name: "does-not-contain", verboseName: t`Does not contain` },
-    { name: "is-null", verboseName: t`Is empty` },
-    { name: "not-null", verboseName: t`Not empty` },
+    { name: "is-null", verboseName: t`Is null` },
+    { name: "not-null", verboseName: t`Not null` },
+    { name: "is-empty", verboseName: t`Is empty` },
+    { name: "not-empty", verboseName: t`Not empty` },
     { name: "starts-with", verboseName: t`Starts with` },
     { name: "ends-with", verboseName: t`Ends with` },
   ],
   [STRING_LIKE]: [
     { name: "=", verboseName: t`Is` },
     { name: "!=", verboseName: t`Is not` },
-    { name: "is-null", verboseName: t`Is empty` },
-    { name: "not-null", verboseName: t`Not empty` },
+    { name: "is-null", verboseName: t`Is null` },
+    { name: "not-null", verboseName: t`Not null` },
+    { name: "is-empty", verboseName: t`Is empty` },
+    { name: "not-empty", verboseName: t`Not empty` },
   ],
   [TEMPORAL]: [
     { name: "=", verboseName: t`Is` },
@@ -410,6 +429,7 @@ const FILTER_OPERATORS_BY_TYPE_ORDERED = {
     { name: "not-null", verboseName: t`Not empty` },
   ],
   [FOREIGN_KEY]: DEFAULT_FILTER_OPERATORS,
+  [PRIMARY_KEY]: DEFAULT_FILTER_OPERATORS,
   [UNKNOWN]: DEFAULT_FILTER_OPERATORS,
 };
 
@@ -419,26 +439,47 @@ const MORE_VERBOSE_NAMES = {
   before: "is before",
   after: "is after",
   "not empty": "is not empty",
+  "not null": "is not null",
   "less than": "is less than",
   "greater than": "is greater than",
   "less than or equal to": "is less than or equal to",
   "greater than or equal to": "is greater than or equal to",
 };
 
-export function getFilterOperators(field, table) {
+export function getFilterOperators(field, table, selected) {
   const type = getFieldType(field) || UNKNOWN;
-  return FILTER_OPERATORS_BY_TYPE_ORDERED[type].map(operatorForType => {
-    const operator = FILTER_OPERATORS[operatorForType.name];
-    const verboseNameLower = operatorForType.verboseName.toLowerCase();
-    return {
-      ...operator,
-      ...operatorForType,
-      moreVerboseName: MORE_VERBOSE_NAMES[verboseNameLower] || verboseNameLower,
-      fields: operator.validArgumentsFilters.map(validArgumentsFilter =>
-        validArgumentsFilter(field, table),
-      ),
-    };
-  });
+  return FILTER_OPERATORS_BY_TYPE_ORDERED[type]
+    .map(operatorForType => {
+      const operator = FIELD_FILTER_OPERATORS[operatorForType.name];
+      const verboseNameLower = operatorForType.verboseName.toLowerCase();
+      return {
+        ...operator,
+        ...operatorForType,
+        moreVerboseName:
+          MORE_VERBOSE_NAMES[verboseNameLower] || verboseNameLower,
+        fields: operator.validArgumentsFilters.map(validArgumentsFilter =>
+          validArgumentsFilter(field, table),
+        ),
+      };
+    })
+    .filter(operator => {
+      if (selected === undefined) {
+        return true;
+      }
+      if (type === "STRING" || type === "STRING_LIKE") {
+        // Text fields should only have is-null / not-null if it was already selected
+        if (selected === "is-null") {
+          return operator["name"] !== "not-null";
+        } else if (selected === "not-null") {
+          return operator["name"] !== "is-null";
+        } else {
+          return (
+            operator["name"] !== "not-null" && operator["name"] !== "is-null"
+          );
+        }
+      }
+      return true;
+    });
 }
 
 // Breakouts and Aggregation options

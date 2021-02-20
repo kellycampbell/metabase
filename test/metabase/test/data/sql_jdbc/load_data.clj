@@ -2,30 +2,26 @@
   (:require [clojure.java.jdbc :as jdbc]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [clojure.tools.reader.edn :as edn]
             [medley.core :as m]
-            [metabase
-             [driver :as driver]
-             [util :as u]]
+            [metabase.driver :as driver]
             [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
             [metabase.driver.sql.query-processor :as sql.qp]
-            [metabase.query-processor.timezone :as qp.timezone]
-            [metabase.test.data
-             [interface :as tx]
-             [sql :as sql.tx]]
-            [metabase.test.data.sql-jdbc
-             [execute :as execute]
-             [spec :as spec]]
+            [metabase.test :as mt]
+            [metabase.test.data.interface :as tx]
+            [metabase.test.data.sql :as sql.tx]
+            [metabase.test.data.sql-jdbc.execute :as execute]
+            [metabase.test.data.sql-jdbc.spec :as spec]
             [metabase.test.data.sql.ddl :as ddl]
-            [metabase.util
-             [date :as du]
-             [honeysql-extensions :as hx]])
+            [metabase.util :as u]
+            [metabase.util.honeysql-extensions :as hx])
   (:import java.sql.SQLException))
 
 (defmulti load-data!
-  "Load the rows for a specific table into a DB. `load-data-chunked!` is the default implementation (see below); several
-  other implementations like `load-data-all-at-once!` and `load-data-one-at-a-time!` are already defined; see below.
-  It will likely take some experimentation to see which implementation works correctly and performs best with your
-  driver."
+  "Load the rows for a specific table (which has already been created) into a DB. `load-data-chunked!` is the default
+  implementation (see below); several other implementations like `load-data-all-at-once!` and
+  `load-data-one-at-a-time!` are already defined; see below. It will likely take some experimentation to see which
+  implementation works correctly and performs best with your driver."
   {:arglists '([driver dbdef tabledef])}
   tx/dispatch-on-driver-with-test-extensions
   :hierarchy #'driver/hierarchy)
@@ -70,7 +66,7 @@
   specified. (This isn't meant for composition with `load-data-get-rows`; "
   [rows]
   (for [[i row] (m/indexed rows)]
-    (assoc row :id (inc i))))
+    (into {:id (inc i)} row)))
 
 (defn load-data-add-ids
   "Middleware function intended for use with `make-load-data-fn`. Add IDs to each row, presumabily for doing a parallel
@@ -104,11 +100,7 @@
                                 (:field-definitions tabledef))]
     ;; TIMEZONE FIXME
     (for [row (:rows tabledef)]
-      (zipmap fields-for-insert (for [v row]
-                                  (if (and (not (instance? java.sql.Time v))
-                                           (instance? java.util.Date v))
-                                    (du/->Timestamp v du/utc)
-                                    v))))))
+      (zipmap fields-for-insert row))))
 
 (defn- make-insert!
   "Used by `make-load-data-fn`; creates the actual `insert!` function that gets passed to the `insert-middleware-fns`
@@ -138,31 +130,35 @@
 ;; You can use one of these alternative implementations instead of `load-data-chunked!` if that doesn't work with your
 ;; DB or one of these other ones performs faster
 
-(def load-data-all-at-once!
+(def ^{:arglists '([driver dbdef tabledef])} load-data-all-at-once!
   "Implementation of `load-data!`. Insert all rows at once."
   (make-load-data-fn))
 
-(def load-data-chunked!
+(def ^{:arglists '([driver dbdef tabledef])} load-data-chunked!
   "Implementation of `load-data!`. Insert rows in chunks of 200 at a time."
   (make-load-data-fn load-data-chunked))
 
-(def load-data-one-at-a-time!
+(def ^{:arglists '([driver dbdef tabledef])} load-data-one-at-a-time!
   "Implementation of `load-data!`. Insert rows one at a time."
   (make-load-data-fn load-data-one-at-a-time))
 
-(def load-data-add-ids!
+(def ^{:arglists '([driver dbdef tabledef])} load-data-add-ids!
   "Implementation of `load-data!`. Insert all rows at once; add IDs."
   (make-load-data-fn load-data-add-ids))
 
-(def load-data-one-at-a-time-add-ids!
+(def ^{:arglists '([driver dbdef tabledef])} load-data-add-ids-chunked!
+  "Implementation of `load-data!`. Insert rows in chunks of 200 at a time; add IDs."
+  (make-load-data-fn load-data-add-ids load-data-chunked))
+
+(def ^{:arglists '([driver dbdef tabledef])} load-data-one-at-a-time-add-ids!
   "Implementation of `load-data!` that inserts rows one at a time, but adds IDs."
   (make-load-data-fn load-data-add-ids load-data-one-at-a-time))
 
-(def load-data-chunked-parallel!
+(def ^{:arglists '([driver dbdef tabledef])} load-data-chunked-parallel!
   "Implementation of `load-data!`. Insert rows in chunks of 200 at a time, in parallel."
   (make-load-data-fn load-data-add-ids (partial load-data-chunked pmap)))
 
-(def load-data-one-at-a-time-parallel!
+(def ^{:arglists '([driver dbdef tabledef])} load-data-one-at-a-time-parallel!
   "Implementation of `load-data!`. Insert rows one at a time, in parallel."
   (make-load-data-fn load-data-add-ids (partial load-data-one-at-a-time pmap)))
 ;; ^ the parallel versions aren't neccesarily faster than the sequential versions for all drivers so make sure to do
@@ -188,28 +184,52 @@
       (let [set-timezone-sql (format set-timezone-format-string "'UTC'")]
         (log/debugf "Setting timezone to UTC before inserting data with SQL \"%s\"" set-timezone-sql)
         (jdbc/execute! spec [set-timezone-sql])))
-    (qp.timezone/with-database-timezone-id nil
+    (mt/with-database-timezone-id nil
       (try
         ;; TODO - why don't we use `execute/execute-sql!` here like we do below?
         (doseq [sql+args statements]
-          (jdbc/execute! spec sql+args {:set-parameters (partial sql-jdbc.execute/set-parameters driver)}))
+          (log/tracef "[insert] %s" (pr-str sql+args))
+          (jdbc/execute! spec sql+args {:set-parameters (fn [stmt params]
+                                                          (sql-jdbc.execute/set-parameters! driver stmt params))}))
         (catch SQLException e
           (println (u/format-color 'red "INSERT FAILED: \n%s\n" statements))
           (jdbc/print-sql-exception-chain e)
           (throw e))))))
 
+(defonce ^:private reference-load-durations
+  (delay (edn/read-string (slurp "test_resources/load-durations.edn"))))
+
 (defn create-db!
   "Default implementation of `create-db!` for SQL drivers."
   {:arglists '([driver dbdef & {:keys [skip-drop-db?]}])}
   [driver {:keys [table-definitions], :as dbdef} & options]
-  ;; first execute statements to drop/create the DB if needed (this will return nothing is `skip-drop-db?` is true)
+  ;; first execute statements to drop the DB if needed (this will do nothing if `skip-drop-db?` is true)
   (doseq [statement (apply ddl/drop-db-ddl-statements driver dbdef options)]
     (execute/execute-sql! driver :server dbdef statement))
+  ;; now execute statements to create the DB
+  (doseq [statement (ddl/create-db-ddl-statements driver dbdef)]
+    (execute/execute-sql! driver :server dbdef statement))
   ;; next, get a set of statements for creating the DB & Tables
-  (let [statements (apply ddl/create-db-ddl-statements driver dbdef options)]
-    ;; exec the combined statement
+  (let [statements (apply ddl/create-db-tables-ddl-statements driver dbdef options)]
+    ;; exec the combined statement. Notice we're now executing in the `:db` context e.g. executing them for a specific
+    ;; DB rather than on `:server` (no DB in particular)
     (execute/execute-sql! driver :db dbdef (str/join ";\n" statements)))
   ;; Now load the data for each Table
-  (doseq [tabledef table-definitions]
-    (du/profile (format "load-data for %s %s %s" (name driver) (:database-name dbdef) (:table-name tabledef))
+  (doseq [tabledef table-definitions
+          :let [reference-duration (or (some-> (get @reference-load-durations [(:database-name dbdef) (:table-name tabledef)])
+                                               u/format-nanoseconds)
+                                       "NONE")]]
+    (u/profile (format "load-data for %s %s %s (reference H2 duration: %s)"
+                       (name driver) (:database-name dbdef) (:table-name tabledef) reference-duration)
       (load-data! driver dbdef tabledef))))
+
+(defn destroy-db!
+  "Default impl of `destroy-db!` for SQL drivers."
+  [driver dbdef]
+  (try
+    (doseq [statement (ddl/drop-db-ddl-statements driver dbdef)]
+      (execute/execute-sql! driver :server dbdef statement))
+    (catch Throwable e
+      (throw (ex-info "Error destroying database"
+                      {:driver driver, :dbdef dbdef}
+                      e)))))

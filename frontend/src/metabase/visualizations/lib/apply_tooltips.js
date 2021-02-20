@@ -20,6 +20,7 @@ export function getClickHoverObject(
     classList,
     event,
     element,
+    settings,
   },
 ) {
   let { cols } = series[0].data;
@@ -110,8 +111,8 @@ export function getClickHoverObject(
           col: col,
         };
       });
+      dimensions = rawCols.map((column, i) => ({ column, value: rawRow[i] }));
     }
-    dimensions = rawCols.map((column, i) => ({ column, value: rawRow[i] }));
   } else if (isBreakoutMultiseries) {
     // an area doesn't have any data, but might have a breakout series to show
     const { _breakoutValue: value, _breakoutColumn: column } = card;
@@ -172,6 +173,7 @@ export function getClickHoverObject(
     dimensions,
     value,
     column,
+    settings,
   };
 }
 
@@ -221,6 +223,7 @@ export function setupTooltips(
       isStacked: stacked,
       event: d3.event,
       element: target,
+      settings,
     });
   };
 

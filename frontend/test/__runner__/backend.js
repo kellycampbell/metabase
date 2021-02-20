@@ -6,7 +6,7 @@ import { spawn } from "child_process";
 import fetch from "isomorphic-fetch";
 import { delay } from "../../src/metabase/lib/promise";
 
-export const DEFAULT_DB = __dirname + "/test_db_fixture.db";
+export const DEFAULT_DB_KEY = "/test_db_fixture.db";
 
 let testDbId = 0;
 const getDbFile = () =>
@@ -16,24 +16,23 @@ let port = 4000;
 const getPort = () => port++;
 
 export const BackendResource = createSharedResource("BackendResource", {
-  getKey({ dbKey = DEFAULT_DB }) {
+  getKey({ dbKey = DEFAULT_DB_KEY }) {
     return dbKey || {};
   },
-  create({ dbKey = DEFAULT_DB }) {
+  create({ dbKey = DEFAULT_DB_KEY }) {
     const dbFile = getDbFile();
-    if (!dbKey) {
-      dbKey = dbFile;
-    }
-    if (process.env["E2E_HOST"] && dbKey === DEFAULT_DB) {
+    const absoluteDbKey = dbKey ? __dirname + dbKey : dbFile;
+    const e2eHost = process.env["E2E_HOST"];
+    if (e2eHost) {
       return {
-        dbKey: dbKey,
-        host: process.env["E2E_HOST"],
+        dbKey: absoluteDbKey,
+        host: e2eHost,
         process: { kill: () => {} },
       };
     } else {
       const port = getPort();
       return {
-        dbKey: dbKey,
+        dbKey: absoluteDbKey,
         dbFile: dbFile,
         host: `http://localhost:${port}`,
         port: port,
@@ -51,11 +50,10 @@ export const BackendResource = createSharedResource("BackendResource", {
         [
           "-XX:+IgnoreUnrecognizedVMOptions", // ignore options not recognized by this Java version (e.g. Java 8 should ignore Java 9 options)
           "-Dh2.bindAddress=localhost", // fix H2 randomly not working (?)
-          "-Xmx2g", // Hard limit of 2GB size for the heap since Circle is dumb and the JVM tends to go over the limit otherwise
-          "-Xverify:none", // Skip bytecode verification for the JAR so it launches faster
+          "-Xmx2g", // Hard limit of 2GB size for the heap since Circle is dumb and the JVM tends to go over the limit
           "-Djava.awt.headless=true", // when running on macOS prevent little Java icon from popping up in Dock
           "-Duser.timezone=US/Pacific",
-          `-Dlog4j.configuration=file:${__dirname}/log4j.properties`,
+          `-Dlog4j.configurationFile=file:${__dirname}/log4j2.xml`,
           "-jar",
           "target/uberjar/metabase.jar",
         ],
@@ -65,6 +63,11 @@ export const BackendResource = createSharedResource("BackendResource", {
             MB_DB_FILE: server.dbFile,
             MB_JETTY_HOST: "0.0.0.0",
             MB_JETTY_PORT: server.port,
+            MB_ENABLE_TEST_ENDPOINTS: "true",
+            MB_PREMIUM_EMBEDDING_TOKEN:
+              (process.env["MB_EDITION"] === "ee" &&
+                process.env["ENTERPRISE_TOKEN"]) ||
+              undefined,
           },
           stdio:
             process.env["DISABLE_LOGGING"] ||

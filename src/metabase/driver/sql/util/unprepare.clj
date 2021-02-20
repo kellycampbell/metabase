@@ -1,19 +1,22 @@
 (ns metabase.driver.sql.util.unprepare
-  "Utility functions for converting a prepared statement with `?` into a plain SQL query.
+  "Utility functions for converting a prepared statement with `?` param placeholders into a plain SQL query by splicing
+  params in place.
 
-  TODO - since this is no longer strictly a 'util' namespace (most `:sql-jdbc` drivers need to implement one or
+  TODO -- since this is no longer strictly a 'util' namespace (most `:sql-jdbc` drivers need to implement one or
   methods from here) let's rename this `metabase.driver.sql.unprepare` when we get a chance."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [java-time :as t]
             [metabase.driver :as driver]
+            [metabase.driver.sql.util :as sql.u]
+            [metabase.util :as u]
             [metabase.util.i18n :refer [trs]])
   (:import [java.time Instant LocalDate LocalDateTime LocalTime OffsetDateTime OffsetTime ZonedDateTime]))
 
 (defmulti unprepare-value
   "Convert a single argument to appropriate raw SQL for splicing directly into a SQL query. Dispatches on both driver
   and the class of `value`."
-  {:arglists '([driver value])}
+  {:arglists '(^String [driver value])}
   (fn [driver value]
     [(driver/the-initialized-driver driver) (class value)])
   :hierarchy #'driver/hierarchy)
@@ -30,9 +33,9 @@
   "NULL")
 
 (defmethod unprepare-value [:sql String]
-  [_ value]
+  [_ s]
   ;; escape single-quotes like Cam's String -> Cam''s String
-  (str \' (str/replace value "'" "''") \'))
+  (str \' (sql.u/escape-sql s :ansi) \'))
 
 (defmethod unprepare-value [:sql Boolean]
   [_ value]
@@ -71,23 +74,6 @@
   [driver t]
   (unprepare-value driver (t/offset-date-time t (t/zone-offset 0))))
 
-;; for legacy situtations
-(defmethod unprepare-value [:sql java.sql.Time]
-  [driver t]
-  (unprepare-value driver (t/local-time t)))
-
-(defmethod unprepare-value [:sql java.sql.Date]
-  [driver t]
-  (unprepare-value driver (t/local-date t)))
-
-(defmethod unprepare-value [:sql java.sql.Timestamp]
-  [driver t]
-  (unprepare-value driver (t/local-date-time t)))
-
-(defmethod unprepare-value [:sql java.util.Date]
-  [driver t]
-  (unprepare-value driver (t/instant t)))
-
 
 ;; TODO - I think a name like `deparameterize` would be more appropriate here
 (defmulti ^String unprepare
@@ -101,14 +87,21 @@
   :hierarchy #'driver/hierarchy)
 
 (defmethod unprepare :sql [driver [sql & args]]
-  (reduce
-   (fn [sql arg]
-     ;; Only match single question marks; do not match ones like `??` which JDBC converts to `?` to use as Postgres
-     ;; JSON operators amongst other things.
-     ;;
-     ;; TODO - this is not smart enough to handle question marks in non argument contexts, for example if someone
-     ;; were to have a question mark inside an identifier such as a table name. I think we'd have to parse the SQL in
-     ;; order to handle those situations.
-     (str/replace-first sql #"(?<!\?)\?(?!\?)" (unprepare-value driver arg)))
+  (transduce
+   identity
+   (completing
+    (fn [sql arg]
+      ;; Only match single question marks; do not match ones like `??` which JDBC converts to `?` to use as Postgres
+      ;; JSON operators amongst other things.
+      ;;
+      ;; TODO - this is not smart enough to handle question marks in non argument contexts, for example if someone
+      ;; were to have a question mark inside an identifier such as a table name. I think we'd have to parse the SQL in
+      ;; order to handle those situations.
+      (let [v (str (unprepare-value driver arg))]
+        (log/tracef "Splice %s as %s" (pr-str arg) (pr-str v))
+        (str/replace-first sql #"(?<!\?)\?(?!\?)" (str/re-quote-replacement v))))
+    (fn [spliced-sql]
+      (log/tracef "Spliced %s\n-> %s" (u/colorize 'green (pr-str sql)) (u/colorize 'blue (pr-str spliced-sql)))
+      spliced-sql))
    sql
    args))

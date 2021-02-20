@@ -1,25 +1,20 @@
 (ns metabase.test.data.sparksql
   (:require [clojure.java.jdbc :as jdbc]
             [clojure.string :as str]
-            [honeysql
-             [core :as hsql]
-             [format :as hformat]]
-            [metabase
-             [config :as config]
-             [driver :as driver]
-             [util :as u]]
-            [metabase.driver.sql
-             [query-processor :as sql.qp]
-             [util :as sql.u]]
+            [honeysql.core :as hsql]
+            [honeysql.format :as hformat]
+            [metabase.config :as config]
+            [metabase.driver :as driver]
+            [metabase.driver.sql.query-processor :as sql.qp]
+            [metabase.driver.sql.util :as sql.u]
             [metabase.driver.sql.util.unprepare :as unprepare]
-            [metabase.test.data
-             [interface :as tx]
-             [sql :as sql.tx]
-             [sql-jdbc :as sql-jdbc.tx]]
-            [metabase.test.data.sql-jdbc
-             [execute :as execute]
-             [load-data :as load-data]]
-            [metabase.test.data.sql.ddl :as ddl]))
+            [metabase.test.data.interface :as tx]
+            [metabase.test.data.sql :as sql.tx]
+            [metabase.test.data.sql-jdbc :as sql-jdbc.tx]
+            [metabase.test.data.sql-jdbc.execute :as execute]
+            [metabase.test.data.sql-jdbc.load-data :as load-data]
+            [metabase.test.data.sql.ddl :as ddl]
+            [metabase.util :as u]))
 
 (sql-jdbc.tx/add-test-extensions! :sparksql)
 
@@ -51,10 +46,10 @@
 (defmethod tx/dbdef->connection-details :sparksql
   [driver context {:keys [database-name]}]
   (merge
-   {:host     "localhost"
-    :port     10000
-    :user     "admin"
-    :password "admin"}
+   {:host     (tx/db-test-env-var-or-throw :sparksql :host "localhost")
+    :port     (Integer/parseUnsignedInt (tx/db-test-env-var-or-throw :sparksql :port "10000"))
+    :user     (tx/db-test-env-var-or-throw :sparksql :user "admin")
+    :password (tx/db-test-env-var-or-throw :sparksql :password "admin")}
    (when (= context :db)
      {:db (tx/format-name driver database-name)})))
 
@@ -93,17 +88,16 @@
   [driver {:keys [database-name], :as dbdef} {:keys [table-name field-definitions]}]
   (let [quote-name    #(sql.u/quote-name driver :field (tx/format-name driver %))
         pk-field-name (quote-name (sql.tx/pk-field-name driver))]
-    (format "CREATE TABLE %s (%s, %s %s)"
+    (format "CREATE TABLE %s (%s %s, %s)"
             (sql.tx/qualify-and-quote driver database-name table-name)
+            pk-field-name (sql.tx/pk-sql-type driver)
             (->> field-definitions
                  (map (fn [{:keys [field-name base-type]}]
                         (format "%s %s" (quote-name field-name) (if (map? base-type)
                                                                   (:native base-type)
                                                                   (sql.tx/field-base-type->sql-type driver base-type)))))
                  (interpose ", ")
-                 (apply str))
-            pk-field-name (sql.tx/pk-sql-type driver)
-            pk-field-name)))
+                 (apply str)))))
 
 (defmethod sql.tx/drop-table-if-exists-sql :sparksql
   [driver {:keys [database-name]} {:keys [table-name]}]
@@ -119,3 +113,19 @@
   (apply execute/sequentially-execute-sql! args))
 
 (defmethod sql.tx/pk-sql-type :sparksql [_] "INT")
+
+(defmethod tx/aggregate-column-info :sparksql
+  ([driver ag-type]
+   ((get-method tx/aggregate-column-info ::tx/test-extensions) driver ag-type))
+
+  ([driver ag-type field]
+   (merge
+    ((get-method tx/aggregate-column-info ::tx/test-extensions) driver ag-type field)
+    (when (= ag-type :sum)
+      {:base_type :type/BigInteger}))))
+
+;; strip out the default table alias `t1` from the generated native query
+(defmethod tx/count-with-field-filter-query :sparksql
+  [driver table field]
+  (-> ((get-method tx/count-with-field-filter-query :sql/test-extensions) driver table field)
+      (update :query str/replace #"`t1` " "")))

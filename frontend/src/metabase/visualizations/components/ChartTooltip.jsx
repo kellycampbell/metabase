@@ -19,7 +19,10 @@ export default class ChartTooltip extends Component {
     }
     if (Array.isArray(hovered.data)) {
       // Array of key, value, col: { data: [{ key, value, col }], element, event }
-      return hovered.data;
+      return hovered.data.map(d => ({
+        ...d,
+        key: d.key || getFriendlyName(d.col),
+      }));
     } else if (hovered.value !== undefined || hovered.dimensions) {
       // ClickObject: { value, column, dimensions: [{ value, column }], element, event }
       const dimensions = [];
@@ -52,6 +55,8 @@ export default class ChartTooltip extends Component {
         targetEvent={hovered && hovered.event}
         verticalAttachments={["bottom", "top"]}
         isOpen={isOpen}
+        // Make sure that for chart tooltips we don't constrain the width so longer strings don't get cut off
+        constrainedWidth={false}
       >
         <table className="py1 px2">
           <tbody>

@@ -5,7 +5,7 @@ import { stripId, FK_SYMBOL } from "metabase/lib/formatting";
 import { TYPE } from "metabase/lib/types";
 
 import Field from "./metadata/Field";
-import Metadata from "./metadata/Metadata";
+import type Metadata from "./metadata/Metadata";
 
 import type {
   ConcreteField,
@@ -14,9 +14,9 @@ import type {
   DatetimeField,
   ExpressionReference,
   DatetimeUnit,
-} from "metabase/meta/types/Query";
+} from "metabase-types/types/Query";
 
-import type { IconName } from "metabase/meta/types";
+import type { IconName } from "metabase-types/types";
 
 /**
  * A dimension option returned by the query_metadata API
@@ -37,6 +37,7 @@ type DimensionOption = {
  *     - DatetimeFieldDimension
  *   - ExpressionDimension
  *   - AggregationDimension
+ *   - TemplateTagDimension
  */
 
 /**
@@ -51,6 +52,7 @@ export default class Dimension {
   _parent: ?Dimension;
   _args: any;
   _metadata: ?Metadata;
+  _query: ?Query;
 
   // Display names provided by the backend
   _subDisplayName: ?String;
@@ -271,8 +273,8 @@ export default class Dimension {
   /**
    * Valid filter operators on this dimension
    */
-  filterOperators(): FilterOperator[] {
-    return this.field().filterOperators();
+  filterOperators(selected): FilterOperator[] {
+    return this.field().filterOperators(selected);
   }
 
   /**
@@ -349,7 +351,7 @@ export default class Dimension {
     return {
       id: field.id,
       base_type: field.base_type,
-      special_type: field.special_type,
+      semantic_type: field.semantic_type,
       name: this.columnName(),
       display_name: this.displayName(),
       field_ref: this.mbql(),
@@ -417,8 +419,8 @@ export class FieldDimension extends Dimension {
     return new Field();
   }
 
-  displayName(): string {
-    return this.field().displayName();
+  displayName(...args): string {
+    return this.field().displayName(...args);
   }
 
   subDisplayName(): string {
@@ -471,7 +473,7 @@ export class FieldIDDimension extends FieldDimension {
 
   field() {
     return (
-      (this._metadata && this._metadata.fields[this._args[0]]) ||
+      (this._metadata && this._metadata.field(this._args[0])) ||
       new Field({ id: this._args[0] })
     );
   }
@@ -534,10 +536,6 @@ export class FieldLiteralDimension extends FieldDimension {
       base_type: this._args[1],
       // HACK: need to thread the query through to this fake Field
       query: this._query,
-      filter_operators: [{ name: "=", verboseName: t`Is`, fields: [] }],
-      filter_operators_lookup: {
-        "=": { name: "=", verboseName: t`Is`, fields: [] },
-      },
     });
   }
 }
@@ -807,7 +805,7 @@ export class ExpressionDimension extends Dimension {
       id: this.mbql(),
       name: this.name(),
       display_name: this.displayName(),
-      special_type: null,
+      semantic_type: null,
       base_type: "type/Float",
       // HACK: need to thread the query through to this fake Field
       query: this._query,
@@ -820,6 +818,11 @@ export class ExpressionDimension extends Dimension {
     return "int";
   }
 }
+
+// These types aren't aggregated. e.g. if you take the distinct count of a FK
+// column, you now have a normal integer and should see relevant filters for
+// that type.
+const UNAGGREGATED_SEMANTIC_TYPES = new Set([TYPE.FK, TYPE.PK]);
 
 /**
  * Aggregation reference, `["aggregation", aggregation-index]`
@@ -840,19 +843,30 @@ export class AggregationDimension extends Dimension {
   }
 
   column(extra = {}) {
-    const aggregation = this.aggregation();
     return {
       ...super.column(),
-      base_type: aggregation ? aggregation.baseType() : TYPE.Float,
       source: "aggregation",
       ...extra,
     };
   }
 
   field() {
-    // FIXME: it isn't really correct to return the unaggregated field. return a fake Field object?
-    const dimension = this.aggregation().dimension();
-    return dimension ? dimension.field() : super.field();
+    const aggregation = this.aggregation();
+    if (!aggregation) {
+      return super.field();
+    }
+    const dimension = aggregation.dimension();
+    const field = dimension && dimension.field();
+    const { semantic_type } = field || {};
+    return new Field({
+      name: aggregation.columnName(),
+      display_name: aggregation.displayName(),
+      base_type: aggregation.baseType(),
+      // don't pass through `semantic_type` when aggregating these types
+      ...(!UNAGGREGATED_SEMANTIC_TYPES.has(semantic_type) && { semantic_type }),
+      query: this._query,
+      metadata: this._metadata,
+    });
   }
 
   /**
@@ -966,6 +980,40 @@ export class JoinedDimension extends FieldDimension {
 
   render() {
     return `${this.joinAlias()} ${FK_SYMBOL} ${super.render()}`;
+  }
+}
+
+export class TemplateTagDimension extends FieldDimension {
+  dimension() {
+    if (this._query) {
+      const tag = this.tag();
+      if (tag && tag.type === "dimension") {
+        return this.parseMBQL(tag.dimension);
+      }
+    }
+    return null;
+  }
+
+  tag() {
+    return this._query.templateTagsMap()[this.tagName()];
+  }
+
+  field() {
+    const dimension = this.dimension();
+    return dimension ? dimension.field() : super.field();
+  }
+
+  tagName() {
+    return this._args[0];
+  }
+
+  displayName() {
+    const tag = this.tag();
+    return (tag && tag["display-name"]) || super.displayName();
+  }
+
+  mbql() {
+    return ["template-tag", this.tagName()];
   }
 }
 

@@ -7,15 +7,12 @@
   See https://github.com/metabase/metabase/wiki/Metabase-Plugin-Manifest-Reference for all the options allowed for a
   plugin manifest."
   (:require [clojure.tools.logging :as log]
-            [metabase
-             [driver :as driver]
-             [util :as u]]
+            [metabase.driver :as driver]
             [metabase.driver.common :as driver.common]
             [metabase.plugins.init-steps :as init-steps]
-            [metabase.util
-             [date :as du]
-             [i18n :refer [trs]]
-             [ssh :as ssh]])
+            [metabase.util :as u]
+            [metabase.util.i18n :refer [trs]]
+            [metabase.util.ssh :as ssh])
   (:import clojure.lang.MultiFn))
 
 (defn- parse-connection-property [prop]
@@ -55,7 +52,7 @@
     ;; implementation
     (remove-method driver/initialize! driver)
     ;; ok, do the init steps listed in the plugin mainfest
-    (du/profile (u/format-color 'magenta (trs "Load lazy loading driver {0}" driver))
+    (u/profile (u/format-color 'magenta (trs "Load lazy loading driver {0}" driver))
       (init-steps/do-init-steps! init-steps))
     ;; ok, now go ahead and call `driver/initialize!` a second time on the driver in case it actually has
     ;; an implementation of `initialize!` other than this one. If it does not, we'll just end up hitting

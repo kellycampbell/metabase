@@ -4,8 +4,8 @@ import "number-to-locale-string";
 import "metabase/css/index.css";
 
 window.MetabaseBootstrap = {
-  enable_xrays: true,
-  timezones: [
+  "enable-xrays": true,
+  "available-timezones": [
     "GMT",
     "UTC",
     "US/Alaska",
@@ -17,7 +17,7 @@ window.MetabaseBootstrap = {
     "US/Pacific",
     "America/Costa_Rica",
   ],
-  available_locales: [["en", "English"]],
+  "availabl-locales": [["en", "English"]],
   // NOTE: update this when updating types.clj
   types: {
     "type/DruidHyperUnique": ["type/*"],
@@ -47,6 +47,9 @@ window.MetabaseBootstrap = {
     "type/State": ["type/Category", "type/Address", "type/Text"],
     "type/CancelationDate": ["type/Date", "type/CancelationTimestamp"],
     "type/CancelationTime": ["type/Date", "type/CancelationTimestamp"],
+    "type/UpdatedDate": ["type/Date", "type/UpdatedTimestamp"],
+    "type/UpdatedTime": ["type/Date", "type/UpdatedTimestamp"],
+    "type/UpdatedTimestamp": ["type/DateTime"],
     "type/DeletionDate": ["type/Date", "type/DeletionTimestamp"],
     "type/DateTimeWithZoneID": ["type/DateTimeWithTZ"],
     "type/Address": ["type/*"],
@@ -82,6 +85,10 @@ window.MetabaseBootstrap = {
     "type/JoinDate": ["type/JoinTimestamp", "type/Date"],
     "type/Boolean": ["type/Category", "type/*"],
     "type/CancelationTimestamp": ["type/DateTime"],
+    "type/TemporalString": ["type/Text", "type/DateTime"],
+    "type/ISO8601DateTimeString": ["type/TemporalString"],
+    "type/ISO8601DateString": ["type/TemporalString"],
+    "type/ISO8601TimeString": ["type/TemporalString"],
     "type/GrossMargin": ["type/Currency"],
     "type/CreationDate": ["type/Date", "type/CreationTimestamp"],
     "type/AvatarURL": ["type/ImageURL"],
@@ -90,6 +97,7 @@ window.MetabaseBootstrap = {
     "type/ImageURL": ["type/URL"],
     "type/Price": ["type/Currency"],
     "type/UNIXTimestampMilliseconds": ["type/UNIXTimestamp"],
+    "type/UNIXTimestampMicroseconds": ["type/UNIXTimestamp"],
     "type/Collection": ["type/*"],
     "type/User": ["type/*"],
     "type/Array": ["type/Collection"],
@@ -103,5 +111,8 @@ window.MetabaseBootstrap = {
     "type/DateTimeWithLocalTZ": ["type/DateTimeWithTZ"],
     "type/UNIXTimestamp": ["type/Integer", "type/Instant"],
     "type/Enum": ["type/Category", "type/*"],
+  },
+  version: {
+    tag: "v1",
   },
 };

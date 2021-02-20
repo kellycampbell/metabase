@@ -1,16 +1,14 @@
 (ns metabase.events.activity-feed
   (:require [clojure.core.async :as async]
             [clojure.tools.logging :as log]
-            [metabase
-             [events :as events]
-             [query-processor :as qp]
-             [util :as u]]
+            [metabase.events :as events]
             [metabase.mbql.util :as mbql.u]
-            [metabase.models
-             [activity :as activity :refer [Activity]]
-             [card :refer [Card]]
-             [dashboard :refer [Dashboard]]
-             [table :as table]]
+            [metabase.models.activity :as activity :refer [Activity]]
+            [metabase.models.card :refer [Card]]
+            [metabase.models.dashboard :refer [Dashboard]]
+            [metabase.models.table :as table]
+            [metabase.query-processor :as qp]
+            [metabase.util :as u]
             [metabase.util.i18n :refer [tru]]
             [toucan.db :as db]))
 
@@ -36,10 +34,9 @@
     :segment-delete
     :user-login}) ; this is only used these days the first time someone logs in to record 'user-joined' events
 
-(def ^:private activity-feed-channel
-  "Channel for receiving event notifications we want to subscribe to for the activity feed."
+(defonce ^:private ^{:doc "Channel for receiving event notifications we want to subscribe to for the activity feed."}
+  activity-feed-channel
   (async/chan))
-
 
 ;;; ------------------------------------------------ EVENT PROCESSING ------------------------------------------------
 
@@ -157,7 +154,6 @@
 
 ;;; ---------------------------------------------------- LIFECYLE ----------------------------------------------------
 
-(defn events-init
-  "Automatically called during startup; start the events listener for the activity feed."
-  []
+(defmethod events/init! ::ActivityFeed
+  [_]
   (events/start-event-listener! activity-feed-topics activity-feed-channel process-activity-event!))
